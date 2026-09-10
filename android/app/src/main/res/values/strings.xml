@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">AVscode</string>
+    <string name="loading">Loading...</string>
+    <string name="installing_linux">Installing Linux environment...</string>
+    <string name="starting_linux">Starting Linux...</string>
+    <string name="starting_vscode">Starting VS Code Server...</string>
+    <string name="connecting">Connecting to VS Code...</string>
+    <string name="error_title">Error</string>
+    <string name="retry">Retry</string>
+    <string name="cancel">Cancel</string>
+    <string name="ok">OK</string>
+    <string name="runtime_not_installed">Linux environment not installed</string>
+    <string name="runtime_start_failed">Failed to start Linux runtime</string>
+    <string name="vscode_server_failed">Failed to start VS Code Server</string>
+    <string name="connection_failed">Failed to connect to VS Code</string>
+    <string name="downloading_rootfs">Downloading Ubuntu rootfs...</string>
+    <string name="extracting_rootfs">Extracting rootfs...</string>
+    <string name="configuring_environment">Configuring development environment...</string>
+</resources>

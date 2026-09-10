@@ -1,0 +1,1 @@
+Nothing should be ignored since the changes only include GitHub Actions workflow configuration files (`.github/workflows/build.yml`, `.github/workflows/ci.yml`, `.github/workflows/release.yml`) which are source/config files, not build artifacts, dependencies, or temporary files.

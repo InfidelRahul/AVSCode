@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <color name="status_bar">#1e1e1e</color>
+    <color name="navigation_bar">#1e1e1e</color>
+    <color name="window_background">#1e1e1e</color>
+    <color name="vscode_background">#1e1e1e</color>
+    <color name="loading_background">#252526</color>
+    <color name="accent">#007acc</color>
+</resources>
