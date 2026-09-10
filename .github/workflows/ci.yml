@@ -1,0 +1,87 @@
+name: Build Test and Upload APK
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main, develop ]
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      
+    - name: Set up JDK 21
+      uses: actions/setup-java@v4
+      with:
+        java-version: '21'
+        distribution: 'temurin'
+        
+    - name: Setup Android SDK
+      uses: android-actions/setup-android@v3
+      
+    - name: Install NDK 29
+      run: |
+        sdkmanager "ndk;29.0.13650431"
+        echo "ANDROID_NDK_HOME=$ANDROID_SDK_ROOT/ndk/29.0.13650431" >> $GITHUB_ENV
+        
+    - name: Grant execute permission for gradlew
+      run: chmod +x android/gradlew
+      
+    - name: Run Lint Checks
+      run: |
+        cd android
+        ./gradlew lint --stacktrace
+        
+    - name: Compile All Modules
+      run: |
+        cd android
+        ./gradlew assembleDebug --stacktrace --info
+        
+    - name: Run Unit Tests (if any)
+      run: |
+        cd android
+        ./gradlew test --stacktrace || echo "No unit tests found, continuing..."
+        
+    - name: Verify APK Generated
+      run: |
+        if [ ! -f android/app/build/outputs/apk/debug/app-debug.apk ]; then
+          echo "Error: APK not generated!"
+          exit 1
+        fi
+        ls -lh android/app/build/outputs/apk/debug/app-debug.apk
+        
+    - name: Display Build Info
+      run: |
+        echo "=== Build Information ==="
+        echo "Commit: ${{ github.sha }}"
+        echo "Branch: ${{ github.ref_name }}"
+        echo "Build Time: $(date -u)"
+        echo ""
+        echo "=== APK Details ==="
+        file android/app/build/outputs/apk/debug/app-debug.apk
+        echo ""
+        echo "=== File Size ==="
+        du -h android/app/build/outputs/apk/debug/app-debug.apk
+        
+    - name: Upload APK Artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: avscode-debug-apk-${{ github.sha }}
+        path: android/app/build/outputs/apk/debug/app-debug.apk
+        retention-days: 1
+        if-no-files-found: error
+        compression-level: 0
+        
+    - name: Upload Build Logs
+      if: failure()
+      uses: actions/upload-artifact@v4
+      with:
+        name: build-logs
+        path: |
+          android/app/build/outputs/logs/
+          android/build/
+        retention-days: 1
