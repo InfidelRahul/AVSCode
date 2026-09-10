@@ -24,8 +24,8 @@ jobs:
       uses: gradle/actions/setup-gradle@v4
       with:
         gradle-version: wrapper
-        build-cache-enabled: true
-        cache-read-only: false
+        cache-disabled: false
+        validate-wrappers: false
         
     - name: Setup Android SDK with NDK
       uses: android-actions/setup-android@v3

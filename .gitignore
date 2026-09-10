@@ -1,11 +1,1 @@
-```yaml
-# Configuration files for GitHub Actions workflows should not be ignored
-# The modified workflow files (.github/workflows/build.yml, .github/workflows/ci.yml, .github/workflows/release.yml) 
-# are part of the source code and should be tracked by git
-
-# Since only workflow configuration files were modified and no build artifacts,
-# dependencies, or temporary files were detected in the changes, no additional
-# ignore rules are needed beyond preserving any existing ones.
-
-# Preserve any existing rules if they were present
-```
+Nothing should be ignored since the changes only include GitHub Actions workflow configuration files (`.github/workflows/build.yml`, `.github/workflows/ci.yml`, `.github/workflows/release.yml`) which are source/config files, not build artifacts, dependencies, or temporary files.
