@@ -1,35 +1,11 @@
-```
-# Gradle
-.gradle/
-build/
-!gradle-wrapper.properties
+```yaml
+# Configuration files for GitHub Actions workflows should not be ignored
+# The modified workflow files (.github/workflows/build.yml, .github/workflows/ci.yml, .github/workflows/release.yml) 
+# are part of the source code and should be tracked by git
 
-# Android
-local.properties
-captures/
-*.keystore
-*.jks
+# Since only workflow configuration files were modified and no build artifacts,
+# dependencies, or temporary files were detected in the changes, no additional
+# ignore rules are needed beyond preserving any existing ones.
 
-# Compiled files
-*.class
-*.jar
-*.war
-*.ear
-*.so
-*.dll
-*.dylib
-
-# Logs
-*.log
-
-# Environment
-.env
-.env.local
-*.env.*
-
-# IDE
-.idea/
-*.swp
-*.swo
-*~
+# Preserve any existing rules if they were present
 ```

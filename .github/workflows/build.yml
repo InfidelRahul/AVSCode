@@ -20,10 +20,12 @@ jobs:
         java-version: '21'
         distribution: 'temurin'
         
-    - name: Enable Gradle Build Cache
-      uses: gradle/gradle-build-action@v3
+    - name: Setup Gradle
+      uses: gradle/actions/setup-gradle@v4
       with:
         gradle-version: wrapper
+        build-cache-enabled: true
+        cache-read-only: false
         
     - name: Setup Android SDK with NDK
       uses: android-actions/setup-android@v3
@@ -43,7 +45,7 @@ jobs:
     - name: Build with Gradle
       run: |
         cd android
-        ./gradlew assembleDebug --build-cache --stacktrace --info
+        ./gradlew assembleDebug --build-cache --stacktrace
         
     - name: Upload APK Artifact
       uses: actions/upload-artifact@v4
