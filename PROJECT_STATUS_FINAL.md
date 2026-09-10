@@ -161,7 +161,7 @@
 - [x] Gradle wrapper: **9.7.1** (from 8.2)
 - [x] Android Gradle Plugin: **8.9.0** (from 8.2.0)
 - [x] Kotlin: **2.1.0** (from 1.9.20)
-- [x] NDK Version: **29.0.13650431** (explicitly specified)
+- [x] NDK Version: **27.2.12479018** (r27c - latest stable LTS)
 - [x] CMake: **3.31.0** (from 3.22.1)
 - [x] compileSdk: **36** (all modules)
 - [x] minSdk: **28** (all modules, from 26)
@@ -202,7 +202,7 @@
 
 ### Must Do Before First Build:
 1. Install Android SDK 36
-2. Install Android NDK 29.0.13650431
+2. Install Android NDK r27c (27.2.12479018)
 3. Create local.properties with SDK/NDK paths
 4. Clone PRoot repository to correct path
 

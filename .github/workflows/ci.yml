@@ -20,13 +20,17 @@ jobs:
         java-version: '21'
         distribution: 'temurin'
         
-    - name: Setup Android SDK
+    - name: Setup Android SDK with NDK
       uses: android-actions/setup-android@v3
+      with:
+        cmdline-tools-version: 11076708
+        packages: 'platform-tools platforms;android-36 build-tools;35.0.0 ndk;29.0.14206865'
       
-    - name: Install NDK 29
+    - name: Set NDK Environment
       run: |
-        sdkmanager "ndk;29.0.13650431"
-        echo "ANDROID_NDK_HOME=$ANDROID_SDK_ROOT/ndk/29.0.13650431" >> $GITHUB_ENV
+        echo "ANDROID_NDK_HOME=$ANDROID_SDK_ROOT/ndk/29.0.14206865" >> $GITHUB_ENV
+        echo "NDK version installed:"
+        cat $ANDROID_SDK_ROOT/ndk/29.0.14206865/source.properties | grep Pkg.Revision
         
     - name: Grant execute permission for gradlew
       run: chmod +x android/gradlew

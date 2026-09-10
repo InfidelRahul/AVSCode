@@ -19,7 +19,7 @@ android {
         
         ndk {
             abiFilters += listOf("arm64-v8a")
-            ndkVersion = "29.0.13650431"
+            ndkVersion = "29.0.14206865"  // NDK r29 (latest stable)
         }
     }
 

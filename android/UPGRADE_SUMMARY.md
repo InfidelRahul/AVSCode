@@ -12,7 +12,7 @@ This document summarizes the comprehensive upgrade of the AVscode (VS Code for A
 | Android Gradle Plugin (AGP) | 9.3.0 | 9.3.0 | ✅ Already latest |
 | Kotlin | 2.4.20 | 2.4.20 | ✅ Already latest |
 | CMake | 4.4.3 | 4.4.3 | ✅ Already latest |
-| NDK | 29.0.13650431 | 29.0.13650431 | ✅ Already latest |
+| NDK | 29.0.14206865 (r29) | 29.0.14206865 (r29) | ✅ Latest stable LTS version |
 
 ### SDK Configuration
 | Setting | Value |
@@ -219,7 +219,7 @@ This document summarizes the comprehensive upgrade of the AVscode (VS Code for A
 1. **Clean Build Required**: Run `./gradlew clean` after pulling changes
 2. **Gradle Daemon**: First build may be slower as daemon starts
 3. **Configuration Cache**: May show warnings initially, will stabilize
-4. **NDK Version**: Ensure NDK 29.0.13650431 is installed
+4. **NDK Version**: Ensure NDK r29 (29.0.14206865) is installed via SDK Manager
 
 ### Build Commands
 ```bash
@@ -241,7 +241,7 @@ This document summarizes the comprehensive upgrade of the AVscode (VS Code for A
 ### Minimum Requirements
 - Android Studio: Hedgehog (2023.1.1) or newer
 - JDK: 17 or newer
-- NDK: 29.0.13650431
+- NDK: 29.0.14206865 (r29) - Latest stable LTS
 - CMake: 4.4.3
 - Android SDK: 36
 

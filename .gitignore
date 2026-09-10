@@ -1,23 +1,17 @@
 ```
+# Gradle
+.gradle/
+!gradle/wrapper/
+
 # Build artifacts
 build/
 dist/
-*.apk
-*.aab
+target/
 
-# Gradle
-.gradle/
-.gradle/
-**/build/
-
-# Android
-*.keystore
-*.jks
-local.properties
-
-# Dependencies
-node_modules/
-**/node_modules/
+# Temporary files
+*.tmp
+*.temp
+*.lock
 
 # Logs
 *.log
@@ -25,23 +19,17 @@ node_modules/
 # Environment
 .env
 .env.local
-.env.*
+*.env.*
 
-# Editor
+# Editor/IDE
 .vscode/
 .idea/
 *.swp
 *.swo
-*.tmp
 
-# System
+# OS
 .DS_Store
 Thumbs.db
-
-# Coverage
-coverage/
-htmlcov/
-.coverage
 
 # Python
 __pycache__/
@@ -49,47 +37,151 @@ __pycache__/
 *.pyo
 *.pyd
 .Python
-*.so
-*.egg-info/
-.eggs/
-.venv/
+env/
 venv/
-.env/
-.mypy_cache/
-.pytest_cache/
+.venv/
+pip-log.txt
+pip-delete-this-directory.txt
 .tox/
+.coverage
+.coverage.*
+.cache
+nosetests.xml
+coverage.xml
+*.cover
+*.log
+.git*
+.pytest_cache/
+.mypy_cache/
+.hypothesis/
 
-# Compiled files
+# Node.js
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+node_modules/
+dist/
+npm-shrinkwrap.json
+package-lock.json
+.npm
+.nyc_output
+.nyc_coverage
+coverage/
+*.lcov
+*.log
+*.tmp
+*.temp
+.DS_Store
+Thumbs.db
+
+# Java
 *.class
-*.o
-*.obj
-*.out
-*.dll
+*.jar
+*.war
+*.ear
+*.nar
 *.so
-*.a
-*.exe
+*.dll
+*.dylib
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+.classpath
+.project
+.settings/
+target/
+!.mvn/wrapper/maven-wrapper.jar
+bin/
+.metadata
+*.launch
+.dependency-file
+load-test/
+.gradle/
+!gradle/wrapper/
+build/
+!src/main/**/*
+!src/test/**/*
 
-# Compressed files
-*.zip
-*.gz
-*.tar
-*.tgz
-*.bz2
-*.xz
-*.7z
-*.rar
-*.zst
-*.lz4
-*.lzh
-*.cab
-*.arj
-*.rpm
-*.deb
-*.Z
-*.lz
-*.lzo
-*.tar.gz
-*.tar.bz2
-*.tar.xz
-*.tar.zst
+# Android specific
+.android/
+.local.properties
+.generated/
+.gradle/
+!gradle/wrapper/
+!/app/src/main/**
+!/app/src/androidTest/**
+!/app/src/test/**
+.libs/
+*.so
+*.aar
+*.apk
+local.properties
+captures/
+.externalNativeBuild
+.gradle
+!gradle/wrapper/
+build/
+!/src/main/**
+!/src/androidTest/**
+!/src/test/**
+*.log
+proguard/
+lint/
+outputs/
+.gradle/
+!gradle/wrapper/
+!src/main/**
+!src/androidTest/**
+!src/test/**
+*.ap_
+*.dex
+*.class
+*.so
+.libs/
+!/gen/**
+!/res/**
+!/assets/**
+!AndroidManifest.xml
+!res/values/strings.xml
+.DS_Store
+Thumbs.db
+```
+
+Wait, I need to reconsider this. Looking at the changes again, most are gradle-related build artifacts and temporary files. Let me create a more focused .gitignore:
+
+```
+# Gradle
+.gradle/
+!gradle/wrapper/
+
+# Build artifacts
+build/
+dist/
+target/
+
+# Temporary files
+*.tmp
+*.temp
+*.lock
+
+# Logs
+*.log
+
+# Environment
+.env
+.env.local
+*.env.*
+
+# Editor/IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
 ```
