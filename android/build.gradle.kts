@@ -9,9 +9,9 @@ plugins {
 // Enable stricter error checking for all modules
 subprojects {
     tasks.withType<org.jetbrains.kotlin.gradle.tasks.KotlinCompile>().configureEach {
-        kotlinOptions {
-            allWarningsAsErrors = false
-            freeCompilerArgs = listOf(
+        compilerOptions {
+            allWarningsAsErrors.set(false)
+            freeCompilerArgs.addAll(
                 "-opt-in=kotlin.RequiresOptIn",
                 "-opt-in=kotlinx.coroutines.ExperimentalCoroutinesApi"
             )
