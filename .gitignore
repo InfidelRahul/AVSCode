@@ -1,12 +1,35 @@
 ```
-# Dependencies
-node_modules/
+# Gradle
+.gradle/
+build/
+!gradle-wrapper.properties
 
-# Editor/IDE files
-.vscode/
+# Android
+local.properties
+captures/
+*.keystore
+*.jks
 
-# Environment files
+# Compiled files
+*.class
+*.jar
+*.war
+*.ear
+*.so
+*.dll
+*.dylib
+
+# Logs
+*.log
+
+# Environment
 .env
 .env.local
 *.env.*
+
+# IDE
+.idea/
+*.swp
+*.swo
+*~
 ```
