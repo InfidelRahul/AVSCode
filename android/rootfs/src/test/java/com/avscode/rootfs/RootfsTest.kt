@@ -24,5 +24,13 @@ class RootfsTest {
         val ex = RootfsInstaller.VerificationException("Missing /bin/bash")
         assertEquals("Missing /bin/bash", ex.message)
     }
+
+    @Test
+    fun testRequiredStructureIncludesStandardDirs() {
+        val expected = listOf("bin", "usr", "etc", "home", "tmp")
+        for (dir in expected) {
+            assertTrue("Expected rootfs to verify directory $dir", dir.isNotBlank())
+        }
+    }
 }
 

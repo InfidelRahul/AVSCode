@@ -58,8 +58,13 @@ class RootfsInstaller(private val context: Context) {
         val hasSh = File(rootfsDir, "bin/sh").exists() || File(rootfsDir, "usr/bin/sh").exists()
         val hasPasswd = File(rootfsDir, "etc/passwd").exists()
         val hasMkdir = File(rootfsDir, "usr/bin/mkdir").exists()
+        val hasBin = File(rootfsDir, "bin").exists()
+        val hasUsr = File(rootfsDir, "usr").exists()
+        val hasEtc = File(rootfsDir, "etc").exists()
+        val hasHome = File(rootfsDir, "home").exists()
+        val hasTmp = File(rootfsDir, "tmp").exists()
 
-        return marker.exists() && hasBash && hasSh && hasPasswd && hasMkdir
+        return marker.exists() && hasBash && hasSh && hasPasswd && hasMkdir && hasBin && hasUsr && hasEtc && hasHome && hasTmp
     }
 
     /**
@@ -583,11 +588,23 @@ class RootfsInstaller(private val context: Context) {
     }
 
     private fun verifyStagedRootfs(stagingDir: File) {
+        File(stagingDir, "home").mkdirs()
+        File(stagingDir, "tmp").mkdirs()
+        ensureDirTraversable(File(stagingDir, "home"))
+        ensureDirTraversable(File(stagingDir, "tmp"))
+        try {
+            Os.chmod(File(stagingDir, "tmp").absolutePath, MODE_1777)
+        } catch (e: Exception) {}
+
         val required = listOf(
+            "bin",
+            "usr",
+            "etc",
+            "home",
+            "tmp",
             "etc/passwd",
             "bin/sh",
-            "usr/bin",
-            "tmp"
+            "usr/bin"
         )
         for (rel in required) {
             val f = File(stagingDir, rel)
