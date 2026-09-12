@@ -3,11 +3,14 @@ package com.avscode.web
 import android.annotation.SuppressLint
 import android.content.Context
 import android.graphics.Bitmap
+import android.graphics.Color
 import android.net.Uri
 import android.view.KeyEvent
+import android.view.ScaleGestureDetector
 import android.view.View
 import android.webkit.*
 import com.avscode.core.AvsLogger
+import java.util.Locale
 
 /**
  * WebView manager for displaying VS Code Web interface.
@@ -18,9 +21,105 @@ class VsCodeWebView(private val context: Context) {
     companion object {
         private const val TAG = "VsCodeWebView"
         const val DESKTOP_USER_AGENT = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36"
+        const val MIN_ZOOM_LEVEL = 40
+        const val MAX_ZOOM_LEVEL = 300
+        const val ZOOM_STEP = 10
+
+        /**
+         * Builds responsive CSS zoom JavaScript with inverse viewport scaling.
+         * Uses Locale.US to ensure dot decimals in JS/CSS numbers across all device locales.
+         */
+        fun buildZoomJavaScript(factor: Double): String {
+            val fStr = String.format(Locale.US, "%.4f", factor)
+            val invW = String.format(Locale.US, "%.3fvw", 100.0 / factor)
+            val invH = String.format(Locale.US, "%.3fvh", 100.0 / factor)
+
+            return """
+                (function() {
+                    try {
+                        var factor = $fStr;
+                        window.__avsCurrentZoomFactor = factor;
+
+                        var docEl = document.documentElement;
+                        var body = document.body;
+                        if (!docEl || !body) return;
+
+                        // Ensure root document fills the exact viewport with no overflow or margins
+                        docEl.style.width = '100vw';
+                        docEl.style.height = '100vh';
+                        docEl.style.maxWidth = '100vw';
+                        docEl.style.maxHeight = '100vh';
+                        docEl.style.margin = '0px';
+                        docEl.style.padding = '0px';
+                        docEl.style.overflow = 'hidden';
+                        docEl.style.backgroundColor = '#181818';
+                        docEl.style.zoom = '1';
+
+                        // Set inverse dimensions so scaled body fills 100% of viewport
+                        body.style.zoom = factor;
+                        body.style.width = '$invW';
+                        body.style.height = '$invH';
+                        body.style.maxWidth = '$invW';
+                        body.style.maxHeight = '$invH';
+                        body.style.minWidth = '$invW';
+                        body.style.minHeight = '$invH';
+                        body.style.position = 'absolute';
+                        body.style.top = '0px';
+                        body.style.left = '0px';
+                        body.style.margin = '0px';
+                        body.style.padding = '0px';
+                        body.style.overflow = 'hidden';
+                        body.style.backgroundColor = '#181818';
+
+                        // Ensure monaco-workbench fills the layout body
+                        var workbench = document.querySelector('.monaco-workbench');
+                        if (workbench) {
+                            workbench.style.width = '100%';
+                            workbench.style.height = '100%';
+                        }
+
+                        // Install responsive listener for screen rotation (portrait/landscape)
+                        if (!window.__avsResizeListenerInstalled) {
+                            window.__avsResizeListenerInstalled = true;
+                            window.addEventListener('resize', function() {
+                                if (window.__avsCurrentZoomFactor && window.__avsCurrentZoomFactor !== 1.0) {
+                                    var f = window.__avsCurrentZoomFactor;
+                                    var b = document.body;
+                                    if (b) {
+                                        var nw = (100.0 / f).toFixed(3) + 'vw';
+                                        var nh = (100.0 / f).toFixed(3) + 'vh';
+                                        b.style.width = nw;
+                                        b.style.height = nh;
+                                        b.style.maxWidth = nw;
+                                        b.style.maxHeight = nh;
+                                    }
+                                }
+                            });
+                        }
+
+                        // Install observer so when monaco-workbench mounts asynchronously, it layouts immediately
+                        if (!window.__avsWorkbenchObserverInstalled) {
+                            window.__avsWorkbenchObserverInstalled = true;
+                            var obs = new MutationObserver(function() {
+                                var wb = document.querySelector('.monaco-workbench');
+                                if (wb && !wb.__avsZoomApplied) {
+                                    wb.__avsZoomApplied = true;
+                                    window.dispatchEvent(new Event('resize'));
+                                }
+                            });
+                            obs.observe(docEl, { childList: true, subtree: true });
+                        }
+
+                    // Force VS Code workbench layout recalculation
+                    window.dispatchEvent(new Event('resize'));
+                } catch(e) {}
+            })();
+        """.trimIndent()
+        }
     }
 
     private var webView: WebView? = null
+    private var scaleGestureDetector: ScaleGestureDetector? = null
     private var isReady = false
     private var lastLoadedUrl: String? = null
 
@@ -54,18 +153,47 @@ class VsCodeWebView(private val context: Context) {
 
         AvsLogger.d(TAG, "Creating and configuring WebView for VS Code (DesktopMode=$isDesktopMode)")
 
+        scaleGestureDetector = ScaleGestureDetector(context, object : ScaleGestureDetector.SimpleOnScaleGestureListener() {
+            private var lastScaleTime = 0L
+
+            override fun onScale(detector: ScaleGestureDetector): Boolean {
+                val now = System.currentTimeMillis()
+                if (now - lastScaleTime < 100) return false
+                val factor = detector.scaleFactor
+                if (factor > 1.05f) {
+                    zoomIn()
+                    lastScaleTime = now
+                    return true
+                } else if (factor < 0.95f) {
+                    zoomOut()
+                    lastScaleTime = now
+                    return true
+                }
+                return false
+            }
+        })
+
         val view = WebView(context).apply {
             isFocusable = true
             isFocusableInTouchMode = true
             scrollBarStyle = View.SCROLLBARS_INSIDE_OVERLAY
+            setBackgroundColor(Color.parseColor("#181818"))
+
+            setOnTouchListener { _, event ->
+                if (event.pointerCount > 1) {
+                    scaleGestureDetector?.onTouchEvent(event) ?: false
+                } else {
+                    false
+                }
+            }
 
             settings.apply {
                 javaScriptEnabled = true
                 domStorageEnabled = true
                 useWideViewPort = true
                 loadWithOverviewMode = true
-                setSupportZoom(true)
-                builtInZoomControls = true
+                setSupportZoom(false)
+                builtInZoomControls = false
                 displayZoomControls = false
                 cacheMode = WebSettings.LOAD_DEFAULT
                 mixedContentMode = WebSettings.MIXED_CONTENT_ALWAYS_ALLOW
@@ -96,6 +224,8 @@ class VsCodeWebView(private val context: Context) {
                     isReady = true
                     injectViewportOverride(view)
                     applyZoom()
+                    view?.postDelayed({ applyZoom() }, 500)
+                    view?.postDelayed({ applyZoom() }, 1500)
                     CookieManager.getInstance().flush()
                     onLoadingStateChanged?.invoke(false)
                 }
@@ -292,8 +422,8 @@ class VsCodeWebView(private val context: Context) {
     }
 
     /**
-     * Injects JavaScript to forcibly override viewport meta tags that prevent zooming
-     * (e.g. user-scalable=no, maximum-scale=1.0).
+     * Injects JavaScript to lock the viewport meta tag to screen bounds,
+     * preventing blurry camera-level scaling and horizontal viewport clipping.
      */
     fun injectViewportOverride(view: WebView?) {
         val js = """
@@ -305,7 +435,7 @@ class VsCodeWebView(private val context: Context) {
                         meta.name = 'viewport';
                         document.head.appendChild(meta);
                     }
-                    meta.setAttribute('content', 'width=device-width, initial-scale=1.0, minimum-scale=0.25, maximum-scale=5.0, user-scalable=yes');
+                    meta.setAttribute('content', 'width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no');
                 } catch(e) {}
             })();
         """.trimIndent()
@@ -313,12 +443,11 @@ class VsCodeWebView(private val context: Context) {
     }
 
     /**
-     * Forcibly zooms in both via WebKit native zoom and CSS body zoom.
+     * Zooms in editor UI responsively without viewport overflow or horizontal scroll clipping.
      */
     fun zoomIn(): Int {
-        if (currentZoomLevel < 300) {
-            currentZoomLevel = (currentZoomLevel + 15).coerceAtMost(300)
-            webView?.zoomIn()
+        if (currentZoomLevel < MAX_ZOOM_LEVEL) {
+            currentZoomLevel = (currentZoomLevel + ZOOM_STEP).coerceAtMost(MAX_ZOOM_LEVEL)
             applyZoom()
             onZoomChanged?.invoke(currentZoomLevel)
         }
@@ -326,12 +455,11 @@ class VsCodeWebView(private val context: Context) {
     }
 
     /**
-     * Forcibly zooms out both via WebKit native zoom and CSS body zoom.
+     * Zooms out editor UI responsively without leaving empty white margins.
      */
     fun zoomOut(): Int {
-        if (currentZoomLevel > 40) {
-            currentZoomLevel = (currentZoomLevel - 15).coerceAtLeast(40)
-            webView?.zoomOut()
+        if (currentZoomLevel > MIN_ZOOM_LEVEL) {
+            currentZoomLevel = (currentZoomLevel - ZOOM_STEP).coerceAtLeast(MIN_ZOOM_LEVEL)
             applyZoom()
             onZoomChanged?.invoke(currentZoomLevel)
         }
@@ -352,24 +480,19 @@ class VsCodeWebView(private val context: Context) {
      * Directly sets zoom level percentage.
      */
     fun setZoomLevel(level: Int) {
-        currentZoomLevel = level.coerceIn(40, 300)
+        currentZoomLevel = level.coerceIn(MIN_ZOOM_LEVEL, MAX_ZOOM_LEVEL)
         applyZoom()
         onZoomChanged?.invoke(currentZoomLevel)
     }
 
     /**
-     * Applies CSS body zoom to scale editor UI reliably.
+     * Applies responsive CSS zoom to scale the VS Code editor UI cleanly.
+     * Inverse width and height calculations ensure the scaled workspace always occupies
+     * exactly 100% of the viewport with no white margins on zoom-out and no clipping on zoom-in.
      */
-    private fun applyZoom() {
+    fun applyZoom() {
         val factor = currentZoomLevel / 100.0
-        val js = """
-            (function() {
-                try {
-                    document.body.style.zoom = '$factor';
-                    document.documentElement.style.zoom = '$factor';
-                } catch(e) {}
-            })();
-        """.trimIndent()
+        val js = buildZoomJavaScript(factor)
         webView?.evaluateJavascript(js, null)
     }
 
