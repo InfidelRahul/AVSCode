@@ -10,19 +10,24 @@ import com.avscode.core.Result
 import com.avscode.core.runCatchingResult
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import org.apache.commons.compress.archivers.tar.TarArchiveEntry
+import org.apache.commons.compress.archivers.tar.TarArchiveInputStream
+import org.apache.commons.compress.compressors.gzip.GzipCompressorInputStream
 import java.io.*
 import java.net.HttpURLConnection
 import java.net.URL
-import java.util.zip.GZIPInputStream
+import java.nio.file.Files
+import java.nio.file.Path
 
 /**
  * Robust Ubuntu Rootfs Installer.
  *
  * Android host responsibility:
  * 1. Download Ubuntu 26.04 Base ARM64 archive.
- * 2. Extract filesystem preserving POSIX modes, permissions, symlinks, and hardlinks.
- * 3. Verify Linux directory structure (/bin, /usr, /etc, /home, /tmp) and essential binaries.
- * 4. Configure guest networking (resolv.conf, hosts), APT privileges, user, and deploy bootstrap.sh.
+ * 2. Extract filesystem using hardened TarArchiveInputStream without turning tar metadata (e.g. PAX headers) into filesystem objects.
+ * 3. Configure guest filesystem (mountpoints, DNS, hosts, APT sandbox, policy-rc.d, user accounts).
+ * 4. Verify Linux directory structure, essential binaries, and guest symlinks.
+ * 5. Inject guest bootstrap script /usr/local/lib/avscode/bootstrap.sh.
  */
 class RootfsInstaller(private val context: Context) {
 
@@ -43,6 +48,45 @@ class RootfsInstaller(private val context: Context) {
         private const val MODE_644 = 0x1A4 // 0644
         private const val MODE_EXEC_BITS = 0x49 // 0111
         private const val MODE_1777 = 0x3FF // 01777
+
+        /**
+         * Resolves a guest path strictly within [rootfsDir], following symlinks up to [maxHops].
+         * Guest absolute symlinks are interpreted relative to [rootfsDir].
+         */
+        fun resolveGuestSymlink(rootfsDir: File, guestPath: String, maxHops: Int = 16): File? {
+            val rootfsCanonical = rootfsDir.canonicalFile
+            var current = File(rootfsCanonical, guestPath.removePrefix("/"))
+            var hops = 0
+
+            while (hops < maxHops) {
+                val currentPath: Path = current.toPath()
+                if (!Files.isSymbolicLink(currentPath)) {
+                    if (!current.exists()) return null
+                    val targetCanonical = current.canonicalFile
+                    if (!targetCanonical.path.startsWith(rootfsCanonical.path)) {
+                        AvsLogger.w(TAG, "Path traversal out of rootfs detected: ${current.path}")
+                        return null
+                    }
+                    return current
+                }
+
+                val rawTarget = try {
+                    Files.readSymbolicLink(currentPath).toString()
+                } catch (e: Exception) {
+                    return null
+                }
+
+                hops++
+                current = if (rawTarget.startsWith("/")) {
+                    File(rootfsCanonical, rawTarget.removePrefix("/"))
+                } else {
+                    File(current.parentFile ?: rootfsCanonical, rawTarget)
+                }
+            }
+
+            AvsLogger.w(TAG, "Symlink loop detected for $guestPath (exceeded $maxHops hops)")
+            return null
+        }
     }
 
     private val paths = AppPaths.getInstance(context)
@@ -57,14 +101,18 @@ class RootfsInstaller(private val context: Context) {
         val hasBash = File(rootfsDir, "bin/bash").exists() || File(rootfsDir, "usr/bin/bash").exists()
         val hasSh = File(rootfsDir, "bin/sh").exists() || File(rootfsDir, "usr/bin/sh").exists()
         val hasPasswd = File(rootfsDir, "etc/passwd").exists()
+        val hasGroup = File(rootfsDir, "etc/group").exists()
+        val hasOsRelease = File(rootfsDir, "etc/os-release").exists()
         val hasMkdir = File(rootfsDir, "usr/bin/mkdir").exists()
         val hasBin = File(rootfsDir, "bin").exists()
         val hasUsr = File(rootfsDir, "usr").exists()
         val hasEtc = File(rootfsDir, "etc").exists()
         val hasHome = File(rootfsDir, "home").exists()
         val hasTmp = File(rootfsDir, "tmp").exists()
+        val noPaxHeaders = !File(rootfsDir, "etc/dpkg/dpkg.cfg.d/PaxHeaders").exists()
 
-        return marker.exists() && hasBash && hasSh && hasPasswd && hasMkdir && hasBin && hasUsr && hasEtc && hasHome && hasTmp
+        return marker.exists() && hasBash && hasSh && hasPasswd && hasGroup && hasOsRelease &&
+                hasMkdir && hasBin && hasUsr && hasEtc && hasHome && hasTmp && noPaxHeaders
     }
 
     /**
@@ -194,15 +242,29 @@ class RootfsInstaller(private val context: Context) {
         destDir: File,
         progressCallback: ((Float) -> Unit)? = null
     ) = withContext(Dispatchers.IO) {
-        AvsLogger.i(TAG, "Extracting ${tarGzFile.name} to ${destDir.absolutePath}")
-        extractWithInternalTar(tarGzFile, destDir, progressCallback)
+        AvsLogger.i(TAG, "Extracting ${tarGzFile.name} to ${destDir.absolutePath} using hardened TarArchiveInputStream")
+        extractWithCommonsCompress(tarGzFile, destDir, progressCallback)
     }
 
+    private data class DeferredHardLink(
+        val targetFile: File,
+        val sourceFile: File,
+        val cleanLink: String,
+        val mode: Int
+    )
+
     /**
-     * Pure Kotlin streaming Tar.gz extractor with full POSIX permissions, symlink,
-     * and hard link preservation.
+     * Hardened Tar.gz extractor using Apache Commons Compress TarArchiveInputStream.
+     *
+     * Handles:
+     * - POSIX PAX extended headers without creating rogue PaxHeaders directories or filesystem entries
+     * - GNU LongLink and LongName records
+     * - USTAR prefixes and standard directory entries
+     * - Deferred hardlinks for entries whose source files appear later in the stream
+     * - Traversability (0755) for all created parent directories
+     * - Preservation of execute bits and POSIX mode flags
      */
-    private fun extractWithInternalTar(
+    private fun extractWithCommonsCompress(
         tarGzFile: File,
         destDir: File,
         progressCallback: ((Float) -> Unit)? = null
@@ -216,153 +278,165 @@ class RootfsInstaller(private val context: Context) {
                 super.read(b, off, len).also { if (it != -1) bytesRead += it }
         }
 
-        GZIPInputStream(countingStream, BUFFER_SIZE).use { gzipStream ->
-            val headerBuffer = ByteArray(512)
-            var nextLongName: String? = null
-            var nextLongLink: String? = null
-            var lastProgressUpdate = 0L
+        val destCanonicalPath = destDir.canonicalPath
+        val deferredHardLinks = mutableListOf<DeferredHardLink>()
+        val buffer = ByteArray(BUFFER_SIZE)
+        var lastProgressUpdate = 0L
+        var entryCount = 0
 
-            while (true) {
-                var headerRead = 0
-                while (headerRead < 512) {
-                    val r = gzipStream.read(headerBuffer, headerRead, 512 - headerRead)
-                    if (r == -1) break
-                    headerRead += r
-                }
-                if (headerRead < 512) break
+        BufferedInputStream(countingStream, BUFFER_SIZE).use { bufferedInput ->
+            GzipCompressorInputStream(bufferedInput).use { gzipStream ->
+                TarArchiveInputStream(gzipStream).use { tarIn ->
+                    var entry: TarArchiveEntry? = tarIn.nextEntry
+                    while (entry != null) {
+                        entryCount++
 
-                // Check for end-of-archive (two consecutive all-zero blocks)
-                if (headerBuffer.all { it.toInt() == 0 }) {
-                    break
-                }
-
-                val rawName = String(headerBuffer, 0, 100, Charsets.UTF_8).trimEnd('\u0000', ' ')
-                val typeFlag = headerBuffer[156].toInt().toChar()
-                val modeString = String(headerBuffer, 100, 8, Charsets.US_ASCII).trimEnd('\u0000', ' ')
-                val mode = try {
-                    if (modeString.isNotBlank()) modeString.trim().toInt(8) else 0
-                } catch (e: Exception) {
-                    0
-                }
-                val sizeString = String(headerBuffer, 124, 12, Charsets.US_ASCII).trimEnd('\u0000', ' ')
-                val size = try {
-                    if (sizeString.isNotBlank()) sizeString.trim().toLong(8) else 0L
-                } catch (e: Exception) {
-                    0L
-                }
-                val rawLinkName = String(headerBuffer, 157, 100, Charsets.UTF_8).trimEnd('\u0000', ' ')
-
-                // Handle GNU LongLink / LongName extensions
-                if (typeFlag == 'L' || rawName == "././@LongLink") {
-                    val longNameBytes = ByteArray(size.toInt())
-                    readFully(gzipStream, longNameBytes)
-                    skipPadding(gzipStream, size)
-                    nextLongName = String(longNameBytes, Charsets.UTF_8).trimEnd('\u0000', ' ')
-                    continue
-                }
-                if (typeFlag == 'K') {
-                    val longLinkBytes = ByteArray(size.toInt())
-                    readFully(gzipStream, longLinkBytes)
-                    skipPadding(gzipStream, size)
-                    nextLongLink = String(longLinkBytes, Charsets.UTF_8).trimEnd('\u0000', ' ')
-                    continue
-                }
-
-                val entryName = (nextLongName ?: rawName).removePrefix("./")
-                nextLongName = null
-                val linkName = (nextLongLink ?: rawLinkName).removePrefix("./")
-                nextLongLink = null
-
-                if (entryName.isEmpty()) continue
-
-                val targetFile = File(destDir, entryName)
-
-                when (typeFlag) {
-                    '5' -> { // Directory
-                        targetFile.mkdirs()
-                        ensureDirTraversable(targetFile)
-                        try {
-                            Os.chmod(targetFile.absolutePath, if (mode != 0) (mode or MODE_755) else MODE_755)
-                        } catch (e: Exception) {}
-                    }
-                    '2' -> { // Symlink
-                        targetFile.parentFile?.let { ensureDirTraversable(it) }
-                        targetFile.delete()
-                        try {
-                            Os.symlink(linkName, targetFile.absolutePath)
-                        } catch (e: Exception) {
-                            AvsLogger.w(TAG, "Symlink failed for $entryName -> $linkName: ${e.message}")
-                        }
-                    }
-                    '1' -> { // Hard link
-                        targetFile.parentFile?.let { ensureDirTraversable(it) }
-                        targetFile.delete()
-                        val cleanLink = linkName.removePrefix("/")
-                        val original = File(destDir, cleanLink)
-                        var linked = false
-                        try {
-                            Os.link(original.absolutePath, targetFile.absolutePath)
-                            linked = true
-                        } catch (e: Exception) {
-                            // Direct Os.link might fail across mount types
+                        // Explicitly discard any PAX header metadata entries
+                        if (entry.isPaxHeader || entry.isGlobalPaxHeader) {
+                            entry = tarIn.nextEntry
+                            continue
                         }
 
-                        if (!linked) {
-                            try {
-                                if (original.exists()) {
-                                    original.copyTo(targetFile, overwrite = true)
-                                    targetFile.setReadable(true, false)
-                                    targetFile.setExecutable(original.canExecute() || (mode and MODE_EXEC_BITS != 0), false)
-                                    try {
-                                        Os.chmod(targetFile.absolutePath, if (mode != 0) mode else MODE_755)
-                                    } catch (e: Exception) {}
-                                } else {
-                                    // Fallback to relative symlink inside rootfs
-                                    Os.symlink(cleanLink, targetFile.absolutePath)
+                        val rawName = entry.name.removePrefix("./").removePrefix("/")
+
+                        // Discard rogue PAX header entries that might otherwise become directory objects
+                        if (rawName.isEmpty() || rawName.contains("PaxHeaders")) {
+                            entry = tarIn.nextEntry
+                            continue
+                        }
+
+                        val targetFile = File(destDir, rawName)
+                        val targetCanonical = targetFile.canonicalPath
+
+                        // Path traversal defense
+                        if (!targetCanonical.startsWith(destCanonicalPath)) {
+                            throw SecurityException("Path traversal attempt in archive entry: ${entry.name}")
+                        }
+
+                        when {
+                            entry.isDirectory -> {
+                                targetFile.mkdirs()
+                                ensureDirTraversable(targetFile)
+                                try {
+                                    Os.chmod(targetFile.absolutePath, if (entry.mode != 0) (entry.mode or MODE_755) else MODE_755)
+                                } catch (e: Exception) {}
+                            }
+                            entry.isSymbolicLink -> {
+                                targetFile.parentFile?.let { ensureDirTraversable(it) }
+                                targetFile.delete()
+                                val linkTarget = entry.linkName
+                                try {
+                                    Os.symlink(linkTarget, targetFile.absolutePath)
+                                } catch (e: Exception) {
+                                    AvsLogger.w(TAG, "Symlink failed for $rawName -> $linkTarget: ${e.message}")
                                 }
-                            } catch (e2: Exception) {
-                                AvsLogger.w(TAG, "Hard link fallback failed for $entryName: ${e2.message}")
+                            }
+                            entry.isLink -> {
+                                targetFile.parentFile?.let { ensureDirTraversable(it) }
+                                targetFile.delete()
+                                val cleanLink = entry.linkName.removePrefix("/").removePrefix("./")
+                                val sourceFile = File(destDir, cleanLink)
+                                if (sourceFile.exists()) {
+                                    createHardLinkOrFallback(targetFile, sourceFile, entry.mode)
+                                } else {
+                                    deferredHardLinks.add(DeferredHardLink(targetFile, sourceFile, cleanLink, entry.mode))
+                                }
+                            }
+                            else -> {
+                                targetFile.parentFile?.let { ensureDirTraversable(it) }
+                                targetFile.delete()
+                                FileOutputStream(targetFile).use { out ->
+                                    var len: Int
+                                    while (tarIn.read(buffer).also { len = it } != -1) {
+                                        out.write(buffer, 0, len)
+                                    }
+                                }
+                                applyFilePermissions(targetFile, rawName, entry.mode)
                             }
                         }
-                    }
-                    else -> { // Regular file ('0', '\u0000', etc.)
-                        targetFile.parentFile?.let { ensureDirTraversable(it) }
-                        FileOutputStream(targetFile).use { out ->
-                            copyBytes(gzipStream, out, size)
-                        }
-                        skipPadding(gzipStream, size)
-                        targetFile.setReadable(true, false)
 
-                        val isExecutable = (mode and MODE_EXEC_BITS != 0) ||
-                                entryName.startsWith("bin/") ||
-                                entryName.startsWith("usr/bin/") ||
-                                entryName.startsWith("sbin/") ||
-                                entryName.startsWith("usr/sbin/") ||
-                                entryName.contains("/bin/")
-
-                        if (isExecutable) {
-                            targetFile.setExecutable(true, false)
+                        val now = System.currentTimeMillis()
+                        if (now - lastProgressUpdate > 250) {
+                            lastProgressUpdate = now
+                            if (totalBytes > 0) {
+                                val frac = (countingStream.bytesRead.toFloat() / totalBytes.toFloat()).coerceIn(0f, 1f)
+                                progressCallback?.invoke(frac)
+                            }
                         }
 
-                        try {
-                            val targetMode = if (mode != 0) mode else if (isExecutable) MODE_755 else MODE_644
-                            Os.chmod(targetFile.absolutePath, targetMode)
-                        } catch (e: Exception) {}
-                    }
-                }
-
-                val now = System.currentTimeMillis()
-                if (now - lastProgressUpdate > 300) {
-                    lastProgressUpdate = now
-                    if (totalBytes > 0) {
-                        val frac = (countingStream.bytesRead.toFloat() / totalBytes.toFloat()).coerceIn(0f, 1f)
-                        progressCallback?.invoke(frac)
+                        entry = tarIn.nextEntry
                     }
                 }
             }
         }
+
+        // Resolve deferred hard links whose source files were unpacked later in the stream
+        for (deferred in deferredHardLinks) {
+            try {
+                if (deferred.sourceFile.exists()) {
+                    deferred.targetFile.delete()
+                    createHardLinkOrFallback(deferred.targetFile, deferred.sourceFile, deferred.mode)
+                } else {
+                    deferred.targetFile.delete()
+                    Os.symlink(deferred.cleanLink, deferred.targetFile.absolutePath)
+                }
+            } catch (e: Exception) {
+                AvsLogger.w(TAG, "Deferred hardlink failed for ${deferred.targetFile.name} -> ${deferred.cleanLink}: ${e.message}")
+            }
+        }
+
+        // Validate that no PaxHeaders directory was created under etc/dpkg/dpkg.cfg.d
+        val roguePax = File(destDir, "etc/dpkg/dpkg.cfg.d/PaxHeaders")
+        if (roguePax.exists()) {
+            roguePax.deleteRecursively()
+        }
+
         progressCallback?.invoke(1.0f)
-        AvsLogger.i(TAG, "Internal tar extraction finished with POSIX modes and permissions applied")
+        AvsLogger.i(TAG, "Rootfs extraction finished with POSIX modes and permissions applied ($entryCount entries)")
+    }
+
+    private fun createHardLinkOrFallback(targetFile: File, sourceFile: File, mode: Int) {
+        var linked = false
+        try {
+            Os.link(sourceFile.absolutePath, targetFile.absolutePath)
+            linked = true
+        } catch (e: Exception) {
+            // Os.link failed across mounts
+        }
+
+        if (!linked) {
+            try {
+                sourceFile.copyTo(targetFile, overwrite = true)
+                applyFilePermissions(targetFile, targetFile.name, mode)
+            } catch (e: Exception) {
+                try {
+                    Os.symlink(sourceFile.name, targetFile.absolutePath)
+                } catch (e2: Exception) {
+                    AvsLogger.w(TAG, "Hard link fallback failed for ${targetFile.name}: ${e2.message}")
+                }
+            }
+        }
+    }
+
+    private fun applyFilePermissions(targetFile: File, entryName: String, mode: Int) {
+        targetFile.setReadable(true, false)
+        val isExec = (mode and MODE_EXEC_BITS != 0) ||
+                entryName.startsWith("bin/") ||
+                entryName.startsWith("usr/bin/") ||
+                entryName.startsWith("sbin/") ||
+                entryName.startsWith("usr/sbin/") ||
+                entryName.contains("/bin/") ||
+                entryName.contains("/sbin/") ||
+                entryName.endsWith(".sh")
+
+        if (isExec) {
+            targetFile.setExecutable(true, false)
+        }
+
+        try {
+            val targetMode = if (mode != 0) mode else if (isExec) MODE_755 else MODE_644
+            Os.chmod(targetFile.absolutePath, targetMode)
+        } catch (e: Exception) {}
     }
 
     private fun ensureDirTraversable(dir: File) {
@@ -377,80 +451,98 @@ class RootfsInstaller(private val context: Context) {
         } catch (e: Exception) {}
     }
 
-    private fun readFully(input: InputStream, buffer: ByteArray) {
-        var offset = 0
-        while (offset < buffer.size) {
-            val count = input.read(buffer, offset, buffer.size - offset)
-            if (count < 0) throw EOFException("Unexpected EOF while reading archive")
-            offset += count
-        }
-    }
-
-    private fun copyBytes(input: InputStream, output: OutputStream, count: Long) {
-        var remaining = count
-        val buf = ByteArray(minOf(BUFFER_SIZE.toLong(), count).toInt())
-        while (remaining > 0) {
-            val toRead = minOf(buf.size.toLong(), remaining).toInt()
-            val r = input.read(buf, 0, toRead)
-            if (r < 0) throw EOFException("Premature EOF while extracting file")
-            output.write(buf, 0, r)
-            remaining -= r
-        }
-    }
-
-    private fun skipPadding(input: InputStream, size: Long) {
-        val pad = (512 - (size % 512)) % 512
-        if (pad > 0) {
-            var skipped = 0L
-            while (skipped < pad) {
-                val s = input.skip(pad - skipped)
-                if (s <= 0) {
-                    if (input.read() == -1) break
-                    skipped++
-                } else {
-                    skipped += s
-                }
-            }
-        }
-    }
-
     /**
      * Configure essential rootfs files so networking, APT, users, and guest bootstrap work seamlessly.
+     * Adapted from LinuxDroid's working rootfs deployment pattern without GUI dependencies.
      */
     private fun configureGuestEnvironment(rootfsDir: File) {
-        // 1. DNS configuration
-        val resolvConf = File(rootfsDir, "etc/resolv.conf")
-        resolvConf.parentFile?.let { ensureDirTraversable(it) }
-        resolvConf.delete()
-        resolvConf.writeText("nameserver 8.8.8.8\nnameserver 1.1.1.1\n")
-        resolvConf.setReadable(true, false)
+        AvsLogger.i(TAG, "Configuring guest environment (mountpoints, DNS, hosts, APT, bootstrap)...")
 
-        // 2. Hosts configuration
-        val hosts = File(rootfsDir, "etc/hosts")
-        hosts.writeText("127.0.0.1 localhost\n::1 localhost\n")
-        hosts.setReadable(true, false)
+        // 1. Create essential PRoot guest directories
+        val guestDirs = listOf(
+            "dev",
+            "dev/pts",
+            "dev/shm",
+            "proc",
+            "sys",
+            "tmp",
+            "run",
+            "home/user",
+            "home/user/projects",
+            "root",
+            "var/lib/avscode",
+            "usr/local/lib/avscode",
+            "etc/avscode"
+        )
+        for (rel in guestDirs) {
+            val d = File(rootfsDir, rel)
+            d.mkdirs()
+            ensureDirTraversable(d)
+        }
 
-        // 3. Prevent APT from dropping privileges to _apt (fails in PRoot sandbox)
-        val aptConfigDir = File(rootfsDir, "etc/apt/apt.conf.d")
-        ensureDirTraversable(aptConfigDir)
-        File(aptConfigDir, "99nodrop").writeText("APT::Sandbox::User \"root\";\n")
-        File(aptConfigDir, "99nolanguages").writeText("Acquire::Languages \"none\";\n")
-
-        // 4. Ensure guest /tmp exists with 1777 permissions
+        // Set /tmp permissions to 1777
         val tmpDir = File(rootfsDir, "tmp")
-        ensureDirTraversable(tmpDir)
         tmpDir.setWritable(true, false)
         try {
             Os.chmod(tmpDir.absolutePath, MODE_1777)
         } catch (e: Exception) {}
 
-        // 5. Ensure /home/user and /home/user/projects exist
-        val userHome = File(rootfsDir, "home/user")
-        val userProjects = File(userHome, "projects")
-        ensureDirTraversable(userHome)
-        ensureDirTraversable(userProjects)
+        // 2. DNS configuration (/etc/resolv.conf)
+        // Ensure no dangling symlinks (e.g. systemd stub) remain
+        val resolvConf = File(rootfsDir, "etc/resolv.conf")
+        resolvConf.parentFile?.let { ensureDirTraversable(it) }
+        resolvConf.delete()
+        resolvConf.writeText("nameserver 1.1.1.1\nnameserver 8.8.8.8\nnameserver 8.8.4.4\n")
+        resolvConf.setReadable(true, false)
 
-        // 6. Ensure user account in /etc/passwd
+        // 3. Hosts & Hostname configuration
+        val hosts = File(rootfsDir, "etc/hosts")
+        hosts.delete()
+        hosts.writeText("127.0.0.1 localhost avscode\n::1 localhost ip6-localhost ip6-loopback\n")
+        hosts.setReadable(true, false)
+
+        val hostname = File(rootfsDir, "etc/hostname")
+        hostname.delete()
+        hostname.writeText("avscode\n")
+        hostname.setReadable(true, false)
+
+        // 4. Session environment (/etc/environment)
+        val envFile = File(rootfsDir, "etc/environment")
+        envFile.delete()
+        envFile.writeText("PATH=\"/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin\"\nLANG=\"C.UTF-8\"\nSHELL=\"/bin/bash\"\n")
+        envFile.setReadable(true, false)
+
+        // 5. APT configuration & daemon policy
+        // Prevent service auto-start in PRoot sandbox during apt package installs
+        val policyFile = File(rootfsDir, "usr/sbin/policy-rc.d")
+        policyFile.parentFile?.let { ensureDirTraversable(it) }
+        policyFile.delete()
+        policyFile.writeText("#!/bin/sh\nexit 101\n")
+        policyFile.setReadable(true, false)
+        policyFile.setExecutable(true, false)
+        try {
+            Os.chmod(policyFile.absolutePath, MODE_755)
+        } catch (e: Exception) {}
+
+        // APT sandbox and retry configs
+        val aptConfigDir = File(rootfsDir, "etc/apt/apt.conf.d")
+        ensureDirTraversable(aptConfigDir)
+        File(aptConfigDir, "99avscode").writeText(
+            """
+            APT::Sandbox::User "root";
+            Acquire::Languages "none";
+            Acquire::Retries "3";
+            Dpkg::Options {
+               "--force-confdef";
+               "--force-confold";
+            };
+            """.trimIndent() + "\n"
+        )
+
+        // Remove any stale excludes or locks
+        File(rootfsDir, "etc/dpkg/dpkg.cfg.d/excludes").delete()
+
+        // 6. User accounts (/etc/passwd and /etc/group)
         val passwdFile = File(rootfsDir, "etc/passwd")
         if (passwdFile.exists()) {
             val content = passwdFile.readText()
@@ -458,8 +550,6 @@ class RootfsInstaller(private val context: Context) {
                 passwdFile.appendText("user:x:1000:1000:User:/home/user:/bin/bash\n")
             }
         }
-
-        // 7. Ensure group in /etc/group
         val groupFile = File(rootfsDir, "etc/group")
         if (groupFile.exists()) {
             val content = groupFile.readText()
@@ -468,17 +558,36 @@ class RootfsInstaller(private val context: Context) {
             }
         }
 
-        // 8. Ensure root profile sets PATH
+        val userHome = File(rootfsDir, "home/user")
+        ensureDirTraversable(userHome)
+        val userProjects = File(userHome, "projects")
+        ensureDirTraversable(userProjects)
+
+        // User profile
+        val userProfile = File(userHome, ".profile")
+        if (!userProfile.exists()) {
+            userProfile.writeText(
+                """
+                export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/opt/code-server/bin
+                export SHELL=/bin/bash
+                export LANG=C.UTF-8
+                """.trimIndent() + "\n"
+            )
+            userProfile.setReadable(true, false)
+        }
+
+        // Root profile
         val rootProfile = File(rootfsDir, "root/.profile")
         rootProfile.parentFile?.let { ensureDirTraversable(it) }
         if (!rootProfile.exists()) {
             rootProfile.writeText("export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin\n")
+            rootProfile.setReadable(true, false)
         }
 
-        // 9. Deploy guest-side bootstrap script /usr/local/lib/avscode/bootstrap.sh
+        // 7. Deploy guest bootstrap script
         deployGuestBootstrapScript(rootfsDir)
 
-        AvsLogger.d(TAG, "Configured guest environment (DNS, APT, /home/user/projects, bootstrap.sh)")
+        AvsLogger.d(TAG, "Guest environment configured successfully")
     }
 
     /**
@@ -524,11 +633,22 @@ class RootfsInstaller(private val context: Context) {
             |APT::Sandbox::User "root";
             |Acquire::Languages "none";
             |Acquire::Retries "3";
+            |Dpkg::Options {
+            |   "--force-confdef";
+            |   "--force-confold";
+            |};
             |EOF
             |
+            |# Ensure policy-rc.d prevents service startups in PRoot
+            |cat <<'EOF' > /usr/sbin/policy-rc.d
+            |#!/bin/sh
+            |exit 101
+            |EOF
+            |chmod +x /usr/sbin/policy-rc.d
+            |
             |if [ ! -s /etc/resolv.conf ]; then
-            |    echo "nameserver 8.8.8.8" > /etc/resolv.conf
-            |    echo "nameserver 1.1.1.1" >> /etc/resolv.conf
+            |    echo "nameserver 1.1.1.1" > /etc/resolv.conf
+            |    echo "nameserver 8.8.8.8" >> /etc/resolv.conf
             |fi
             |
             |# 3. Update package indexes
@@ -587,38 +707,47 @@ class RootfsInstaller(private val context: Context) {
         } catch (e: Exception) {}
     }
 
+    /**
+     * Verifies structural integrity, mandatory binaries, and guest symlinks.
+     * Fails explicitly if any PaxHeaders metadata directory exists in /etc/dpkg/dpkg.cfg.d.
+     */
     private fun verifyStagedRootfs(stagingDir: File) {
-        File(stagingDir, "home").mkdirs()
-        File(stagingDir, "tmp").mkdirs()
-        ensureDirTraversable(File(stagingDir, "home"))
-        ensureDirTraversable(File(stagingDir, "tmp"))
-        try {
-            Os.chmod(File(stagingDir, "tmp").absolutePath, MODE_1777)
-        } catch (e: Exception) {}
+        // 1. Validate that no PaxHeaders directory exists in dpkg config
+        val paxHeadersDir = File(stagingDir, "etc/dpkg/dpkg.cfg.d/PaxHeaders")
+        if (paxHeadersDir.exists()) {
+            throw VerificationException("Rootfs extraction produced invalid PaxHeaders directory in ${paxHeadersDir.path}")
+        }
 
-        val required = listOf(
-            "bin",
-            "usr",
-            "etc",
-            "home",
-            "tmp",
+        // 2. Structural Linux Directories
+        val requiredDirs = listOf("bin", "usr", "etc", "home", "tmp", "dev", "proc", "sys", "var", "run")
+        for (dir in requiredDirs) {
+            val d = File(stagingDir, dir)
+            if (!d.exists() || !d.isDirectory) {
+                throw VerificationException("Rootfs verification failed: missing directory /$dir")
+            }
+        }
+
+        // 3. Essential System Configuration Files
+        val requiredFiles = listOf(
             "etc/passwd",
-            "bin/sh",
-            "usr/bin"
+            "etc/group",
+            "etc/os-release"
         )
-        for (rel in required) {
+        for (rel in requiredFiles) {
             val f = File(stagingDir, rel)
             if (!f.exists()) {
                 throw VerificationException("Rootfs verification failed: missing $rel")
             }
         }
 
-        val hasBash = File(stagingDir, "bin/bash").exists() || File(stagingDir, "usr/bin/bash").exists()
-        if (!hasBash) {
-            throw VerificationException("Rootfs verification failed: missing bash")
+        // 4. Mandatory Shell Executables
+        val bashResolved = resolveGuestSymlink(stagingDir, "/bin/bash") ?: resolveGuestSymlink(stagingDir, "/usr/bin/bash")
+        val shResolved = resolveGuestSymlink(stagingDir, "/bin/sh") ?: resolveGuestSymlink(stagingDir, "/usr/bin/sh")
+        if (bashResolved == null && shResolved == null) {
+            throw VerificationException("Rootfs verification failed: neither /bin/bash nor /bin/sh resolved to a valid executable")
         }
 
-        // Verify and repair usr/bin/mkdir if needed
+        // 5. Verify and repair usr/bin/mkdir if needed
         val mkdirFile = File(stagingDir, "usr/bin/mkdir")
         if (!mkdirFile.exists() || !mkdirFile.canExecute()) {
             AvsLogger.w(TAG, "usr/bin/mkdir missing or not executable in staging, repairing...")
@@ -647,6 +776,12 @@ class RootfsInstaller(private val context: Context) {
             try {
                 Os.chmod(mkdirFile.absolutePath, MODE_755)
             } catch (e: Exception) {}
+        }
+
+        // 6. Verify guest bootstrap script is installed and executable
+        val bootstrapScript = File(stagingDir, "usr/local/lib/avscode/bootstrap.sh")
+        if (!bootstrapScript.exists() || !bootstrapScript.canExecute()) {
+            throw VerificationException("Rootfs verification failed: missing or non-executable /usr/local/lib/avscode/bootstrap.sh")
         }
 
         AvsLogger.d(TAG, "Staged rootfs passed structure verification")
