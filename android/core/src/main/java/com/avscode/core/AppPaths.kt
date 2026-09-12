@@ -39,7 +39,6 @@ class AppPaths(private val context: Context) {
 
     // Log files
     val serverLogFile: File get() = File(cacheDir, "vscode-server.log")
-    val tunnelLogFile: File get() = serverLogFile
     val runtimeLogFile: File get() = File(cacheDir, "linux-runtime.log")
 
     // Guest Auth Bridge helper

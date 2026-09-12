@@ -22,7 +22,7 @@ enum class RuntimeState {
  * Reflects the exact 12-state runtime pipeline:
  * NEEDS_STORAGE_ACCESS -> DOWNLOADING_ROOTFS -> EXTRACTING_ROOTFS -> ROOTFS_READY ->
  * STARTING_LINUX -> VERIFYING_LINUX -> LINUX_READY -> INSTALLING_PACKAGES ->
- * INSTALLING_VSCODE -> STARTING_VSCODE -> READY
+ * INSTALLING_VSCODE -> VSCODE_READY -> STARTING_AUTH_BRIDGE -> STARTING_VSCODE_SERVER -> READY
  */
 sealed class AppState {
     object NeedsStorageAccess : AppState()
@@ -37,9 +37,6 @@ sealed class AppState {
     object VsCodeReady : AppState()
     data class StartingAuthBridge(val status: String) : AppState()
     data class StartingVsCodeServer(val status: String) : AppState()
-    data class StartingTunnel(val status: String) : AppState()
-    data class TunnelAuthenticationRequired(val authUrl: String, val code: String?) : AppState()
-    object StartingVsCode : AppState()
     data class Ready(val url: String) : AppState()
     object Stopping : AppState()
 
@@ -57,7 +54,7 @@ sealed class AppState {
 
     val isReady: Boolean get() = this is Ready
     val isFailed: Boolean get() = this is Failed || this is RootfsFailed || this is LinuxFailed || this is PackageInstallFailed || this is VsCodeFailed
-    val canAccessCli: Boolean get() = this is LinuxReady || this is InstallingPackages || this is InstallingVsCode || this is VsCodeReady || this is StartingAuthBridge || this is StartingVsCodeServer || this is StartingTunnel || this is TunnelAuthenticationRequired || this is StartingVsCode || this is Ready || this is VsCodeFailed
+    val canAccessCli: Boolean get() = this is LinuxReady || this is InstallingPackages || this is InstallingVsCode || this is VsCodeReady || this is StartingAuthBridge || this is StartingVsCodeServer || this is Ready || this is VsCodeFailed
 }
 
 /**

@@ -35,7 +35,7 @@ class VsCodeCliTest {
         assertTrue(cmd.contains("--without-connection-token"))
         assertTrue(cmd.contains("--accept-server-license-terms"))
         assertTrue(cmd.contains("--cli-data-dir /home/user/.vscode-cli"))
-        assertTrue(cmd.contains("--user-data-dir /home/user/.vscode-cli/data"))
+        assertTrue(cmd.contains("--server-data-dir /home/user/.vscode-cli/data"))
     }
 
     @Test
@@ -61,6 +61,5 @@ class VsCodeCliTest {
         assertTrue(status.isRunning)
         assertEquals(8080, status.serverPort)
         assertEquals("http://127.0.0.1:8080/?folder=/home/user/projects", status.serverUrl)
-        assertEquals("http://127.0.0.1:8080/?folder=/home/user/projects", status.tunnelUrl)
     }
 }

@@ -168,7 +168,7 @@ class RuntimeController private constructor(private val context: Context) {
                 _appState.value = AppState.InstallingPackages("Configuring guest development tools...")
                 emitLog("[Packages] Running Linux guest bootstrap script (/usr/local/lib/avscode/bootstrap.sh)...")
                 try {
-                    vscodeCli.ensureBootstrap { line ->
+                    ensureGuestBootstrap { line ->
                         emitLog(line)
                     }.getOrThrow()
                     emitLog("[Packages] Development packages installed successfully.")
@@ -269,6 +269,41 @@ class RuntimeController private constructor(private val context: Context) {
             linuxRuntime.execute("chmod 755 ${paths.guestAuthHelperScript} 2>/dev/null || true")
         } catch (e: Exception) {
             AvsLogger.w(TAG, "Failed to setup guest auth helper: ${e.message}")
+        }
+    }
+
+    /**
+     * Executes the guest-side bootstrap script /usr/local/lib/avscode/bootstrap.sh inside PRoot.
+     * Skips immediately if already bootstrapped.
+     */
+    suspend fun ensureGuestBootstrap(onOutput: ((String) -> Unit)? = null): Result<Unit> = withContext(Dispatchers.IO) {
+        runCatchingResult {
+            val marker = paths.hostBootstrapMarker
+            if (marker.exists()) {
+                AvsLogger.d(TAG, "Bootstrap already completed, skipping")
+                onOutput?.invoke("[Bootstrap] Linux environment already bootstrapped.")
+                return@runCatchingResult Unit
+            }
+
+            AvsLogger.i(TAG, "Running guest bootstrap script: ${paths.guestBootstrapScript}")
+            onOutput?.invoke("[Bootstrap] Running guest bootstrap script (/usr/local/lib/avscode/bootstrap.sh)...")
+
+            val exitCode = linuxRuntime.executeStreaming(paths.guestBootstrapScript) { line ->
+                onOutput?.invoke(line)
+            }.getOrThrow()
+
+            if (exitCode != 0) {
+                throw RuntimeException("Guest bootstrap script failed with exit code $exitCode")
+            }
+
+            if (!marker.exists()) {
+                marker.parentFile?.mkdirs()
+                marker.createNewFile()
+            }
+
+            AvsLogger.i(TAG, "Linux bootstrap completed successfully")
+            onOutput?.invoke("[Bootstrap] Linux bootstrap complete.")
+            Unit
         }
     }
 

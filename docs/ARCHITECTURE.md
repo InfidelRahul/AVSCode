@@ -119,7 +119,7 @@ AVSCode runs full Visual Studio Code (via Microsoft's official VS Code CLI `code
 
 ---
 
-### 4. Microsoft VS Code CLI & Tunnel (`VsCodeCliManager.kt`)
+### 4. Microsoft VS Code CLI & Local Web Server (`VsCodeCliManager.kt`)
 
 - **Binary Distribution**:
   - Official Microsoft standalone ARM64 Linux CLI release (`cli-alpine-arm64`).
@@ -127,15 +127,18 @@ AVSCode runs full Visual Studio Code (via Microsoft's official VS Code CLI `code
 - **Launch Configuration**:
   - Executed inside PRoot as `user`:
     ```bash
-    code tunnel \
+    code serve-web \
+      --host 127.0.0.1 \
+      --port <dynamicPort> \
+      --without-connection-token \
       --accept-server-license-terms \
       --cli-data-dir /home/user/.vscode-cli \
-      --user-data-dir /home/user/.vscode-cli/data \
-      --name avscode
+      --server-data-dir /home/user/.vscode-cli/data
     ```
-- **Connection & Authentication**:
-  - Detects device code authentication prompts (`https://github.com/login/device`) and presents them in the Android UI.
-  - Dynamically parses the generated `https://vscode.dev/tunnel/<name>/...` connection URL from process stdout and loads it directly into the WebView.
+- **Local Loopback Supervision**:
+  - Ephemeral port allocated via `ServerSocket(0)` avoids port collisions.
+  - HTTP health probe polls `http://127.0.0.1:<port>` until ready before loading into the WebView.
+  - 100% local, offline-capable development environment without external cloud or tunnel dependencies.
 
 ---
 

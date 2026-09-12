@@ -23,7 +23,6 @@ import java.net.URL
  * Implements a fully local, offline-capable VS Code architecture:
  * - Official Microsoft ARM64 standalone CLI archive is downloaded on the Android host.
  * - Archive extraction and binary placement are performed strictly inside Linux userspace (`/usr/local/bin/code`).
- * - Guest bootstrap is performed via `/usr/local/lib/avscode/bootstrap.sh`.
  * - CLI presence is verified via `command -v code && code --version` inside PRoot.
  * - Local VS Code Server (`code serve-web`) is supervised inside Ubuntu userspace on a dynamic local port (`127.0.0.1:<port>`).
  * - Serves directly over local loopback HTTP to the Android WebView with 0 network/cloud dependencies.
@@ -61,14 +60,19 @@ class VsCodeCliManager(
         /**
          * Builds the command to execute `code serve-web` locally inside PRoot userspace.
          */
-        fun buildServerCommand(port: Int, host: String = DEFAULT_SERVER_HOST): String {
-            return "$GUEST_BIN_PATH serve-web " +
+        fun buildServerCommand(
+            port: Int,
+            host: String = DEFAULT_SERVER_HOST,
+            cliBinPath: String = GUEST_BIN_PATH,
+            cliDataDir: String = GUEST_DATA_DIR
+        ): String {
+            return "$cliBinPath serve-web " +
                     "--host $host " +
                     "--port $port " +
                     "--without-connection-token " +
                     "--accept-server-license-terms " +
-                    "--cli-data-dir $GUEST_DATA_DIR " +
-                    "--user-data-dir $GUEST_DATA_DIR/data"
+                    "--cli-data-dir $cliDataDir " +
+                    "--server-data-dir $cliDataDir/data"
         }
 
         /**
@@ -113,54 +117,15 @@ class VsCodeCliManager(
         return status == -2
     }
 
-    fun isTunnelRunning(): Boolean = isServerRunning()
-
     /**
      * Get the active local server URL (e.g. http://127.0.0.1:port/?folder=/home/user/projects).
      */
     fun getServerUrl(): String? = activeServerUrl
 
-    fun getTunnelUrl(): String? = getServerUrl()
-
     /**
      * Get the active local listening port.
      */
     fun getServerPort(): Int? = serverPort
-
-    /**
-     * Executes the guest-side bootstrap script /usr/local/lib/avscode/bootstrap.sh inside PRoot.
-     * Skips immediately if already bootstrapped.
-     */
-    suspend fun ensureBootstrap(onOutput: ((String) -> Unit)? = null): Result<Unit> = withContext(Dispatchers.IO) {
-        runCatchingResult {
-            val marker = paths.hostBootstrapMarker
-            if (marker.exists()) {
-                AvsLogger.d(TAG, "Bootstrap already completed, skipping")
-                onOutput?.invoke("[Bootstrap] Linux environment already bootstrapped.")
-                return@runCatchingResult Unit
-            }
-
-            AvsLogger.i(TAG, "Running guest bootstrap script: ${paths.guestBootstrapScript}")
-            onOutput?.invoke("[Bootstrap] Running guest bootstrap script (/usr/local/lib/avscode/bootstrap.sh)...")
-
-            val exitCode = linuxRuntime.executeStreaming(paths.guestBootstrapScript) { line ->
-                onOutput?.invoke(line)
-            }.getOrThrow()
-
-            if (exitCode != 0) {
-                throw RuntimeException("Guest bootstrap script failed with exit code $exitCode")
-            }
-
-            if (!marker.exists()) {
-                marker.parentFile?.mkdirs()
-                marker.createNewFile()
-            }
-
-            AvsLogger.i(TAG, "Linux bootstrap completed successfully")
-            onOutput?.invoke("[Bootstrap] Linux bootstrap complete.")
-            Unit
-        }
-    }
 
     /**
      * Installs the official Microsoft VS Code CLI inside Ubuntu userspace (/usr/local/bin/code).
@@ -294,6 +259,7 @@ class VsCodeCliManager(
      * - Spawns the server bound strictly to loopback `127.0.0.1:<port>`.
      * - Monitors server readiness via active HTTP polling until reachable.
      * - Emits the local editor URL on success.
+     * - On failure, terminates the spawned process and clears state.
      *
      * @param port Optional specific port to bind to (defaults to dynamic port)
      * @param onLog Real-time output stream callback
@@ -304,7 +270,7 @@ class VsCodeCliManager(
         onLog: ((String) -> Unit)? = null,
         onServerReady: ((url: String) -> Unit)? = null
     ): Result<String> = withContext(Dispatchers.IO) {
-        runCatchingResult {
+        val result = runCatchingResult {
             if (isServerRunning() && activeServerUrl != null) {
                 AvsLogger.i(TAG, "VS Code Server already running at $activeServerUrl")
                 onLog?.invoke("[VS Code] Server already active at $activeServerUrl")
@@ -355,6 +321,16 @@ class VsCodeCliManager(
 
             readyUrl
         }
+
+        if (result.isFailure) {
+            try {
+                stopServer()
+            } catch (e: Exception) {
+                AvsLogger.d(TAG, "Error cleaning up after failed server start: ${e.message}")
+            }
+        }
+
+        result
     }
 
     /**
@@ -403,7 +379,6 @@ class VsCodeCliManager(
         throw RuntimeException("Timed out waiting for local VS Code Server on port $port after ${STARTUP_TIMEOUT_MS / 1000}s:\n$logs")
     }
 
-
     private suspend fun cleanStaleProcesses() {
         try {
             linuxRuntime.execute("pkill -f 'code serve-web' 2>/dev/null || true")
@@ -435,8 +410,6 @@ class VsCodeCliManager(
         }
     }
 
-    suspend fun stopTunnel(): Result<Unit> = stopServer()
-
     suspend fun getStatus(): VsCodeCliStatus = withContext(Dispatchers.IO) {
         VsCodeCliStatus(
             isInstalled = isInstalled(),
@@ -451,6 +424,5 @@ data class VsCodeCliStatus(
     val isInstalled: Boolean,
     val isRunning: Boolean,
     val serverPort: Int? = null,
-    val serverUrl: String? = null,
-    val tunnelUrl: String? = serverUrl
+    val serverUrl: String? = null
 )

@@ -113,9 +113,6 @@ class LinuxRuntimeService : Service() {
                     is AppState.VsCodeReady -> "VS Code CLI ready"
                     is AppState.StartingAuthBridge -> state.status
                     is AppState.StartingVsCodeServer -> state.status
-                    is AppState.StartingTunnel -> "Starting VS Code: ${state.status}"
-                    is AppState.TunnelAuthenticationRequired -> "Auth required: ${state.code ?: state.authUrl}"
-                    is AppState.StartingVsCode -> "Starting VS Code..."
                     is AppState.Ready -> "VS Code active at ${state.url}"
                     is AppState.Stopping -> "Stopping Linux userspace..."
                     is AppState.RootfsFailed -> "Rootfs error: ${state.message}"
