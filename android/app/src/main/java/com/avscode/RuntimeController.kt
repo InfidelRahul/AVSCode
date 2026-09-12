@@ -22,10 +22,10 @@ import kotlinx.coroutines.sync.withLock
  * Implements the 12-state runtime pipeline:
  * NEEDS_STORAGE_ACCESS -> DOWNLOADING_ROOTFS -> EXTRACTING_ROOTFS -> ROOTFS_READY ->
  * STARTING_LINUX -> VERIFYING_LINUX -> LINUX_READY -> INSTALLING_PACKAGES ->
- * INSTALLING_VSCODE -> VSCODE_READY -> STARTING_TUNNEL -> READY
+ * INSTALLING_VSCODE -> VSCODE_READY -> STARTING_AUTH_BRIDGE -> STARTING_VSCODE_SERVER -> READY
  *
- * Provides resilient CLI access: If VS Code CLI/tunnel fails, Linux userspace remains
- * active for terminal troubleshooting.
+ * Serves a fully local, offline-capable VS Code experience on 127.0.0.1:<dynamic-port>
+ * connected to the PRoot Ubuntu userspace.
  */
 class RuntimeController private constructor(private val context: Context) {
 
@@ -50,6 +50,13 @@ class RuntimeController private constructor(private val context: Context) {
     val linuxRuntime = PRootRuntime(context, rootfsInstaller)
     val vscodeCli = VsCodeCliManager(context, linuxRuntime)
 
+    // Android <-> Linux Authentication Bridge
+    var onAuthRequestTriggered: ((requestId: String, authUrl: String, title: String?) -> Unit)? = null
+    val authBridgeServer = AuthBridgeServer { requestId, authUrl, title ->
+        AvsLogger.i(TAG, "Auth request received via bridge: requestId=$requestId authUrl=$authUrl")
+        onAuthRequestTriggered?.invoke(requestId, authUrl, title)
+    }
+
     private val _appState = MutableStateFlow<AppState>(AppState.NeedsStorageAccess)
     val appState: StateFlow<AppState> = _appState.asStateFlow()
 
@@ -65,8 +72,8 @@ class RuntimeController private constructor(private val context: Context) {
             _appState.value = AppState.NeedsStorageAccess
         } else if (!rootfsInstaller.isInstalled()) {
             _appState.value = AppState.NotInstalled
-        } else if (vscodeCli.isTunnelRunning() && vscodeCli.getTunnelUrl() != null) {
-            _appState.value = AppState.Ready(vscodeCli.getTunnelUrl()!!)
+        } else if (vscodeCli.isServerRunning() && vscodeCli.getServerUrl() != null) {
+            _appState.value = AppState.Ready(vscodeCli.getServerUrl()!!)
         } else {
             _appState.value = AppState.RootfsReady
         }
@@ -85,7 +92,7 @@ class RuntimeController private constructor(private val context: Context) {
     suspend fun startAll(forceRestart: Boolean = false): Result<String> = mutex.withLock {
         withContext(Dispatchers.IO) {
             val currentState = _appState.value
-            if (!forceRestart && currentState is AppState.Ready && vscodeCli.isTunnelRunning()) {
+            if (!forceRestart && currentState is AppState.Ready && vscodeCli.isServerRunning()) {
                 AvsLogger.i(TAG, "Runtime already ready at ${currentState.url}")
                 return@withContext Result.Success(currentState.url)
             }
@@ -197,31 +204,71 @@ class RuntimeController private constructor(private val context: Context) {
                 _appState.value = AppState.VsCodeReady
             }
 
-            // Step 6: Start Microsoft VS Code Tunnel inside Linux userspace
-            _appState.value = AppState.StartingTunnel("Starting VS Code Tunnel...")
-            emitLog("[VS Code] Starting Microsoft VS Code Tunnel inside Linux userspace...")
+            // Step 6: Start Android <-> Linux Authentication Bridge
+            _appState.value = AppState.StartingAuthBridge("Starting Auth Bridge...")
+            val bridgePort = authBridgeServer.start()
+            emitLog("[AuthBridge] Android <-> Linux Authentication Bridge active on 127.0.0.1:$bridgePort")
+            setupGuestAuthHelper(bridgePort)
+
+            // Step 7: Start Local Microsoft VS Code Server (code serve-web) inside Linux userspace
+            _appState.value = AppState.StartingVsCodeServer("Starting local VS Code Server...")
+            emitLog("[VS Code] Starting local VS Code Server (code serve-web) inside Linux userspace...")
             try {
-                val tunnelUrl = vscodeCli.startTunnel(
-                    tunnelName = "avscode",
+                val serverUrl = vscodeCli.startServer(
                     onLog = { line -> emitLog(line) },
-                    onAuthRequired = { authUrl, code ->
-                        _appState.value = AppState.TunnelAuthenticationRequired(authUrl, code)
-                        emitLog("[VS Code] AUTHENTICATION REQUIRED: Visit $authUrl and enter code: ${code ?: "see terminal"}")
-                    },
-                    onTunnelReady = { url ->
-                        emitLog("[VS Code] Tunnel endpoint established: $url")
+                    onServerReady = { url ->
+                        emitLog("[VS Code] Local server reachable: $url")
                     }
                 ).getOrThrow()
 
-                _appState.value = AppState.Ready(tunnelUrl)
-                emitLog("[VS Code] VS Code Tunnel ready at $tunnelUrl. Launching editor interface.")
-                Result.Success(tunnelUrl)
+                _appState.value = AppState.Ready(serverUrl)
+                emitLog("[VS Code] Local VS Code Server ready at $serverUrl. Launching editor interface.")
+                Result.Success(serverUrl)
             } catch (e: Throwable) {
-                _appState.value = AppState.VsCodeFailed("VS Code Tunnel failed to start: ${e.message}", e)
-                emitLog("[VS Code] TUNNEL START FAILED: ${e.message}")
+                _appState.value = AppState.VsCodeFailed("Local VS Code Server failed to start: ${e.message}", e)
+                emitLog("[VS Code] SERVER START FAILED: ${e.message}")
                 // Linux userspace remains running for CLI debugging
                 Result.Failure(e)
             }
+        }
+    }
+
+    /**
+     * Injects the guest authentication helper script into /usr/local/bin/avscode-auth.
+     */
+    private suspend fun setupGuestAuthHelper(bridgePort: Int) {
+        try {
+            val scriptContent = """
+                #!/bin/bash
+                PORT="${'$'}{AVSCODE_AUTH_BRIDGE_PORT:-$bridgePort}"
+                ENDPOINT="http://127.0.0.1:${'$'}PORT"
+                case "${'$'}1" in
+                    open)
+                        AUTH_URL="${'$'}2"
+                        TITLE="${'$'}3"
+                        curl -s -X POST -H "Content-Type: application/json" -d "{\"authUrl\":\"${'$'}AUTH_URL\",\"title\":\"${'$'}TITLE\"}" "${'$'}ENDPOINT/auth/request"
+                        ;;
+                    poll)
+                        REQ_ID="${'$'}2"
+                        curl -s "${'$'}ENDPOINT/auth/token?requestId=${'$'}REQ_ID"
+                        ;;
+                    health)
+                        curl -s "${'$'}ENDPOINT/health"
+                        ;;
+                    *)
+                        echo "AVSCode Authentication Bridge Helper"
+                        echo "Usage: avscode-auth {open <url> [title] | poll <requestId> | health}"
+                        ;;
+                esac
+            """.trimIndent()
+
+            val guestScriptFile = paths.hostAuthHelperScript
+            guestScriptFile.parentFile?.mkdirs()
+            guestScriptFile.writeText(scriptContent)
+            guestScriptFile.setExecutable(true, false)
+            linuxRuntime.execute("chmod 755 ${paths.guestAuthHelperScript} 2>/dev/null || true")
+        } catch (e: Exception) {
+            AvsLogger.w(TAG, "Failed to setup guest auth helper: ${e.message}")
         }
     }
 
@@ -234,14 +281,15 @@ class RuntimeController private constructor(private val context: Context) {
     }
 
     /**
-     * Gracefully stops VS Code Tunnel, Linux runtime, and foreground service.
+     * Gracefully stops VS Code Server, Auth Bridge, Linux runtime, and foreground service.
      */
     suspend fun stopAll(): Result<Unit> = mutex.withLock {
         withContext(Dispatchers.IO) {
             _appState.value = AppState.Stopping
             emitLog("[Runtime] Stopping all services...")
             runCatchingResult {
-                vscodeCli.stopTunnel()
+                vscodeCli.stopServer()
+                authBridgeServer.stop()
                 linuxRuntime.stop()
                 LinuxRuntimeService.stop(context)
                 updateInitialState()

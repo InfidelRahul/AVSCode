@@ -49,6 +49,16 @@ class CoreTest {
         assertFalse(linuxReady.isFailed)
         assertTrue(linuxReady.canAccessCli)
 
+        val startingAuth: AppState = AppState.StartingAuthBridge("Starting auth bridge...")
+        assertFalse(startingAuth.isReady)
+        assertFalse(startingAuth.isFailed)
+        assertTrue(startingAuth.canAccessCli)
+
+        val startingServer: AppState = AppState.StartingVsCodeServer("Starting local server...")
+        assertFalse(startingServer.isReady)
+        assertFalse(startingServer.isFailed)
+        assertTrue(startingServer.canAccessCli)
+
         val ready: AppState = AppState.Ready("http://127.0.0.1:8080")
         assertTrue(ready.isReady)
         assertFalse(ready.isFailed)

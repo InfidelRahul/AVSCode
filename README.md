@@ -7,14 +7,17 @@
 
 **AVSCode** is a native Android application that runs a complete, persistent Visual Studio Code environment locally on Android devices without requiring root access.
 
-The application embeds an Ubuntu ARM64 Linux userspace powered by **LinuxDroid PRoot**, manages the official **Microsoft Visual Studio Code CLI (`code tunnel`)**, and provides an optimized, hardware-accelerated **Android WebView** user interface connected to `vscode.dev`.
+The application embeds an Ubuntu ARM64 Linux userspace powered by **LinuxDroid PRoot**, manages the official **Microsoft Visual Studio Code CLI (`code serve-web`)** on local loopback, provides a dedicated **Android ↔ Linux Authentication Bridge**, and renders a fully responsive, hardware-accelerated **Android WebView** user interface with edge-to-edge safe area support.
 
 ---
 
 ## Highlights
 
 - **No Root Required**: Executes fully within user application sandbox using PRoot syscall emulation.
-- **Official Microsoft VS Code CLI**: Runs Microsoft's official standalone ARM64 Linux CLI with `code tunnel` inside the Linux environment.
+- **100% Local & Offline**: Serves VS Code directly over `http://127.0.0.1:<dynamic-port>` without external cloud or tunnel dependencies.
+- **Dedicated Android ↔ Linux Auth Bridge**: Lightweight loopback IPC endpoint enabling guest tools to trigger Android browser auth flows and receive single-use, session-scoped callbacks.
+- **Edge-to-Edge Safe Area Insets**: Uses `WindowInsetsCompat` to adapt dynamically to status bars, display cutouts/notches, gesture navigation bars, and soft keyboards across all Android versions (including Android 15 & 16).
+- **Streamlined UI Experience**: Post-setup landing view is the VS Code editor directly, with the Linux terminal retained as a toggleable diagnostic/CLI console.
 - **Android 15/16 Ready**: All native binaries (`libproot.so`, `libavscodespawn.so`, etc.) compiled with **16KB page-size alignment** (`-Wl,-z,max-page-size=16384`).
 - **Complete Development Toolchain**: Ubuntu ARM64 userspace with Python 3, Git, Node.js, npm, and apt package manager.
 - **Robust Process Supervision**: Custom JNI process spawner with POSIX process group isolation (`setpgid`) and clean group termination.
@@ -34,16 +37,21 @@ The application embeds an Ubuntu ARM64 Linux userspace powered by **LinuxDroid P
 │   │   MainActivity    │◄───────┤   RuntimeController    │   │
 │   │  (WebView Host)   │ State  │  (Singleton Manager)   │   │
 │   └─────────┬─────────┘        └───────────┬────────────┘   │
-│             │ vscode.dev                   │ Starts / Stops │
-│             │ tunnel URL                   ▼                │
+│             │ http://127.0.0.1:<port>      │ Starts / Stops │
+│             │ (Local Web Server)           ▼                │
 │             │                  ┌────────────────────────┐   │
 │             │                  │  LinuxRuntimeService   │   │
 │             │                  │  (Foreground Service)  │   │
 │             │                  └───────────┬────────────┘   │
-│             ▼                              │ Spawns JNI     │
-│   ┌───────────────────┐                    ▼                │
-│   │   VsCodeWebView   │        ┌────────────────────────┐   │
-│   └───────────────────┘        │   NativeSpawn (JNI)    │   │
+│             ▼                              │                │
+│   ┌───────────────────┐        ┌───────────┴────────────┐   │
+│   │   VsCodeWebView   │        │   AuthBridgeServer     │   │
+│   └───────────────────┘        │ (127.0.0.1:<bridgePort>)   │
+│                                └───────────┬────────────┘   │
+│                                            │ Spawns JNI     │
+│                                            ▼                │
+│                                ┌────────────────────────┐   │
+│                                │   NativeSpawn (JNI)    │   │
 │                                └───────────┬────────────┘   │
 └────────────────────────────────────────────┼────────────────┘
                                              │ fork() / execve()
@@ -59,8 +67,8 @@ The application embeds an Ubuntu ARM64 Linux userspace powered by **LinuxDroid P
 │   ┌──────────────────────────▼──────────────────────────┐   │
 │   │              Ubuntu ARM64 Userspace                 │   │
 │   │  - /bin/bash, Python 3, Git                         │   │
-│   │  - /usr/local/bin/code (Microsoft VS Code CLI)      │   │
-│   │  - code tunnel -> vscode.dev endpoint               │   │
+│   │  - /usr/local/bin/code serve-web (Local Server)     │   │
+│   │  - /usr/local/bin/avscode-auth (Auth helper)        │   │
 │   │  - /home/user/projects (Workspaces)                 │   │
 │   └─────────────────────────────────────────────────────┘   │
 └─────────────────────────────────────────────────────────────┘

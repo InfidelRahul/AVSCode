@@ -38,8 +38,13 @@ class AppPaths(private val context: Context) {
     val hostVsCodeDataDir: File get() = File(rootfsDir, "home/user/.vscode-cli")
 
     // Log files
-    val tunnelLogFile: File get() = File(cacheDir, "vscode-tunnel.log")
+    val serverLogFile: File get() = File(cacheDir, "vscode-server.log")
+    val tunnelLogFile: File get() = serverLogFile
     val runtimeLogFile: File get() = File(cacheDir, "linux-runtime.log")
+
+    // Guest Auth Bridge helper
+    val guestAuthHelperScript: String = "/usr/local/bin/avscode-auth"
+    val hostAuthHelperScript: File get() = File(rootfsDir, "usr/local/bin/avscode-auth")
 
     // Bootstrap script inside guest rootfs
     val guestBootstrapScript: String = "/usr/local/lib/avscode/bootstrap.sh"

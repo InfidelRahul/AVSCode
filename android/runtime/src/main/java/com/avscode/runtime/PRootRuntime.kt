@@ -165,9 +165,9 @@ class PRootRuntime(
      * Note: LD_LIBRARY_PATH is deliberately omitted from the guest environment
      * to prevent glibc executables from loading incompatible Android Bionic libraries.
      */
-    fun buildEnvironment(homeDir: String = "/home/user"): Array<String> {
+    fun buildEnvironment(homeDir: String = "/home/user", extraEnv: Map<String, String> = emptyMap()): Array<String> {
         val loader = getLoaderBinary()
-        return arrayOf(
+        val baseEnv = mutableListOf(
             "PROOT_LOADER=${loader.absolutePath}",
             "PROOT_TMP_DIR=${paths.prootTmpDir.absolutePath}",
             "PROOT_NO_SECCOMP=1",
@@ -180,6 +180,8 @@ class PRootRuntime(
             "LANG=C.UTF-8",
             "DEBIAN_FRONTEND=noninteractive"
         )
+        extraEnv.forEach { (k, v) -> baseEnv.add("$k=$v") }
+        return baseEnv.toTypedArray()
     }
 
     override suspend fun install(): Result<Unit> = withContext(Dispatchers.IO) {

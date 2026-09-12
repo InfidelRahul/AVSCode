@@ -10,9 +10,13 @@ import android.os.Bundle
 import android.provider.Settings
 import android.view.KeyEvent
 import android.view.View
+import android.view.ViewGroup
 import android.view.inputmethod.EditorInfo
 import android.widget.*
 import androidx.appcompat.app.AppCompatActivity
+import androidx.core.view.ViewCompat
+import androidx.core.view.WindowCompat
+import androidx.core.view.WindowInsetsCompat
 import androidx.lifecycle.lifecycleScope
 import com.avscode.core.AppState
 import com.avscode.core.AvsLogger
@@ -27,10 +31,11 @@ import kotlinx.coroutines.launch
  * Main activity for AVSCode — VS Code for Android.
  *
  * Implements:
- * - Dedicated live Terminal/Installation Console view.
- * - First-launch storage access verification and explanation.
- * - Interactive Linux CLI troubleshooting capabilities.
- * - VS Code WebView presentation and lifecycle coordination.
+ * - Edge-to-edge support with dynamic safe area insets (status bars, cutouts, gesture bars, IME).
+ * - Direct transition to the local VS Code editor WebView once server is ready.
+ * - Persistent/toggleable Linux terminal and diagnostics console.
+ * - Android <-> Linux Authentication Bridge coordination.
+ * - Offline-first operation against local PRoot userspace.
  */
 class MainActivity : AppCompatActivity() {
 
@@ -39,6 +44,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     // UI components
+    private lateinit var mainContainer: FrameLayout
     private lateinit var webviewContainer: FrameLayout
     private lateinit var terminalContainer: LinearLayout
     private lateinit var statusBadge: TextView
@@ -61,14 +67,34 @@ class MainActivity : AppCompatActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        setContentView(R.layout.activity_main)
 
+        // Enable modern edge-to-edge layout
+        WindowCompat.setDecorFitsSystemWindows(window, false)
+
+        setContentView(R.layout.activity_main)
         AvsLogger.i(TAG, "MainActivity created")
 
         initViews()
+        setupWindowInsets()
 
         runtimeController = RuntimeController.getInstance(this)
         webViewManager = VsCodeWebView(this)
+
+        // Wire up Auth Bridge intent handler
+        runtimeController.onAuthRequestTriggered = { requestId, authUrl, title ->
+            runOnUiThread {
+                try {
+                    val browserIntent = Intent(Intent.ACTION_VIEW, Uri.parse(authUrl)).apply {
+                        flags = Intent.FLAG_ACTIVITY_NEW_TASK
+                    }
+                    startActivity(browserIntent)
+                    val msg = title ?: "Authentication requested: opening browser..."
+                    Toast.makeText(this, msg, Toast.LENGTH_SHORT).show()
+                } catch (e: Exception) {
+                    AvsLogger.w(TAG, "Failed to launch browser for auth request $requestId: ${e.message}")
+                }
+            }
+        }
 
         webViewManager.onConnectionError = { err ->
             appendTerminalLine("[WebView] Connection error: $err")
@@ -93,6 +119,8 @@ class MainActivity : AppCompatActivity() {
             }
         })
 
+        handleIncomingAuthIntent(intent)
+
         // Check and trigger startup
         lifecycleScope.launch {
             if (StoragePermissionHelper.isStorageConfigured(this@MainActivity)) {
@@ -105,7 +133,26 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    override fun onNewIntent(intent: Intent?) {
+        super.onNewIntent(intent)
+        handleIncomingAuthIntent(intent)
+    }
+
+    private fun handleIncomingAuthIntent(intent: Intent?) {
+        val data = intent?.data ?: return
+        if (data.scheme == "avscode" || data.path?.contains("callback") == true) {
+            val requestId = data.getQueryParameter("requestId") ?: data.getQueryParameter("state")
+            val code = data.getQueryParameter("code")
+            val token = data.getQueryParameter("token")
+            if (requestId != null) {
+                runtimeController.authBridgeServer.completeSession(requestId, code, token)
+                Toast.makeText(this, "AVSCode: Authentication complete!", Toast.LENGTH_SHORT).show()
+            }
+        }
+    }
+
     private fun initViews() {
+        mainContainer = findViewById(R.id.main_container)
         webviewContainer = findViewById(R.id.webview_container)
         terminalContainer = findViewById(R.id.terminal_container)
         statusBadge = findViewById(R.id.status_badge)
@@ -160,6 +207,49 @@ class MainActivity : AppCompatActivity() {
             } else {
                 false
             }
+        }
+    }
+
+    /**
+     * Applies dynamic system bar, display cutout, and IME window insets.
+     * Prevents content clipping without hardcoded pixel/dp dimensions.
+     */
+    private fun setupWindowInsets() {
+        val density = resources.displayMetrics.density
+        val basePad = (12 * density).toInt()
+        val baseFabMargin = (16 * density).toInt()
+
+        ViewCompat.setOnApplyWindowInsetsListener(mainContainer) { _, windowInsets ->
+            val insets = windowInsets.getInsets(
+                WindowInsetsCompat.Type.systemBars() or WindowInsetsCompat.Type.displayCutout()
+            )
+            val ime = windowInsets.getInsets(WindowInsetsCompat.Type.ime())
+
+            // Apply safe insets to terminal container
+            terminalContainer.setPadding(
+                basePad + insets.left,
+                basePad + insets.top,
+                basePad + insets.right,
+                basePad + maxOf(insets.bottom, ime.bottom)
+            )
+
+            // Apply safe insets to webview container so editor tabs and status bar are accessible
+            webviewContainer.setPadding(
+                insets.left,
+                insets.top,
+                insets.right,
+                insets.bottom
+            )
+
+            // Apply insets to Floating Action Button
+            val fabParams = fabShowTerminal.layoutParams as? FrameLayout.LayoutParams
+            fabParams?.let { params ->
+                params.bottomMargin = baseFabMargin + maxOf(insets.bottom, ime.bottom)
+                params.rightMargin = baseFabMargin + insets.right
+                fabShowTerminal.layoutParams = params
+            }
+
+            windowInsets
         }
     }
 
@@ -281,13 +371,23 @@ class MainActivity : AppCompatActivity() {
                         statusHeadline.text = "Microsoft VS Code CLI ready."
                         progressBar.visibility = View.GONE
                     }
+                    is AppState.StartingAuthBridge -> {
+                        statusBadge.text = "STARTING_AUTH_BRIDGE"
+                        statusHeadline.text = state.status
+                        progressBar.visibility = View.GONE
+                    }
+                    is AppState.StartingVsCodeServer -> {
+                        statusBadge.text = "STARTING_SERVER"
+                        statusHeadline.text = state.status
+                        progressBar.visibility = View.GONE
+                    }
                     is AppState.StartingTunnel -> {
-                        statusBadge.text = "STARTING_TUNNEL"
+                        statusBadge.text = "STARTING_VSCODE"
                         statusHeadline.text = state.status
                         progressBar.visibility = View.GONE
                     }
                     is AppState.TunnelAuthenticationRequired -> {
-                        statusBadge.text = "TUNNEL_AUTH_REQUIRED"
+                        statusBadge.text = "AUTH_REQUIRED"
                         val codeMsg = state.code?.let { "Code: $it" } ?: "See terminal for code"
                         statusHeadline.text = "Authentication required ($codeMsg). Visit ${state.authUrl}"
                         progressBar.visibility = View.GONE
@@ -296,7 +396,7 @@ class MainActivity : AppCompatActivity() {
                         // Copy code to clipboard and open browser
                         state.code?.let { authCode ->
                             val clipboard = getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager
-                            clipboard?.setPrimaryClip(ClipData.newPlainText("VS Code Tunnel Code", authCode))
+                            clipboard?.setPrimaryClip(ClipData.newPlainText("VS Code Auth Code", authCode))
                             Toast.makeText(this@MainActivity, "Auth code copied: $authCode", Toast.LENGTH_LONG).show()
                         }
 

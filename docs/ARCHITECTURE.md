@@ -1,6 +1,6 @@
 # AVSCode Architecture & Technical Specification
 
-AVSCode runs full Visual Studio Code (via Microsoft's official VS Code CLI and VS Code Tunnel architecture) locally on Android devices without requiring root access. The host Android application serves the Web UI through a hardware-accelerated Android WebView connected to `vscode.dev`, while all computation, filesystem operations, compiler toolchains, and language servers execute in a self-contained ARM64 Linux userspace managed via PRoot.
+AVSCode runs full Visual Studio Code (via Microsoft's official VS Code CLI `code serve-web`) locally on Android devices without requiring root access. The host Android application serves the Web UI through a hardware-accelerated, edge-to-edge Android WebView connected to `http://127.0.0.1:<dynamic-port>`, while all computation, filesystem operations, compiler toolchains, and language servers execute in a self-contained ARM64 Linux userspace managed via PRoot. A dedicated loopback `AuthBridgeServer` handles Android ↔ Linux authentication flows.
 
 ---
 
@@ -15,16 +15,20 @@ AVSCode runs full Visual Studio Code (via Microsoft's official VS Code CLI and V
 │   │  (WebView Host)   │ State  │  (Singleton Manager)   │   │
 │   └─────────┬─────────┘        └───────────┬────────────┘   │
 │             │                              │                │
-│             │ vscode.dev                   │ Starts / Stops │
-│             │ tunnel URL                   ▼                │
+│             │ http://127.0.0.1:<port>      │ Starts / Stops │
+│             │ (Local Web Server)           ▼                │
 │             │                  ┌────────────────────────┐   │
 │             │                  │  LinuxRuntimeService   │   │
 │             │                  │  (Foreground Service)  │   │
 │             │                  └───────────┬────────────┘   │
 │             ▼                              │                │
-│   ┌───────────────────┐                    │ Spawns JNI     │
-│   │   VsCodeWebView   │                    ▼                │
-│   └───────────────────┘        ┌────────────────────────┐   │
+│   ┌───────────────────┐        ┌───────────┴────────────┐   │
+│   │   VsCodeWebView   │        │   AuthBridgeServer     │   │
+│   └───────────────────┘        │ (127.0.0.1:<bridgePort>)   │
+│                                └───────────┬────────────┘   │
+│                                            │ Spawns JNI     │
+│                                            ▼                │
+│                                ┌────────────────────────┐   │
 │                                │   NativeSpawn (JNI)    │   │
 │                                │    (avscode_spawn)     │   │
 │                                └───────────┬────────────┘   │
@@ -45,8 +49,8 @@ AVSCode runs full Visual Studio Code (via Microsoft's official VS Code CLI and V
 │   ┌──────────────────────────▼──────────────────────────┐   │
 │   │              Ubuntu ARM64 Userspace                 │   │
 │   │  - /bin/bash, /usr/bin/python3, /usr/bin/git        │   │
-│   │  - /usr/local/bin/code (Microsoft VS Code CLI)      │   │
-│   │  - code tunnel -> vscode.dev endpoint               │   │
+│   │  - /usr/local/bin/code serve-web (Local Server)     │   │
+│   │  - /usr/local/bin/avscode-auth (Auth Bridge helper) │   │
 │   │  - /home/user/projects (Persistent user workspaces) │   │
 │   └─────────────────────────────────────────────────────┘   │
 └─────────────────────────────────────────────────────────────┘
@@ -66,15 +70,22 @@ AVSCode runs full Visual Studio Code (via Microsoft's official VS Code CLI and V
     3. Linux userspace diagnostic probe (`/usr/bin/mkdir`).
     4. One-time guest development tool bootstrap (`bootstrap.sh`).
     5. Microsoft VS Code CLI verification & installation (`/usr/local/bin/code`).
-    6. `code tunnel` process supervision & dynamic URL detection.
-    7. State transition to `AppState.Ready(url)` for WebView consumption.
+    6. `AuthBridgeServer` startup on ephemeral local loopback port (`127.0.0.1:<bridgePort>`).
+    7. Guest helper injection (`/usr/local/bin/avscode-auth`).
+    8. Local VS Code Server (`code serve-web`) supervision on dynamic port with HTTP health probing.
+    9. State transition to `AppState.Ready(url)` for WebView consumption.
+- **`AuthBridgeServer` (`com.avscode.core.AuthBridgeServer`)**:
+  - Lightweight, zero-dependency local loopback HTTP IPC service running on Android host.
+  - Provides endpoints for guest processes: `/health`, `POST /auth/request`, `/auth/callback`, and single-use `GET /auth/token`.
+  - Dispatches browser intents on Android host when guest processes request OAuth or web authorization.
 - **`LinuxRuntimeService` (`com.avscode.runtime.LinuxRuntimeService`)**:
   - Android Foreground Service with type `FOREGROUND_SERVICE_TYPE_DATA_SYNC`.
-  - Holds a wake lock and displays ongoing status notifications to prevent Android OOM kills while long-running compilation or tunnel connections run in the background.
+  - Holds a wake lock and displays ongoing status notifications to prevent Android OOM kills while long-running compilation or local web servers run in the background.
 - **`MainActivity` (`com.avscode.MainActivity`)**:
   - Pure view controller that observes `RuntimeController.appState`.
+  - Implements modern edge-to-edge support with `WindowInsetsCompat` across status bars, display cutouts/notches, gesture navigation, and soft keyboard (IME).
   - Handles fullscreen display, back button dispatch via `OnBackPressedDispatcher`, and hardware keyboard shortcut pass-through to the WebView.
-  - Manages dedicated interactive Terminal view and device login authorization prompts.
+  - Switches automatically to the VS Code editor upon readiness; retains the Linux terminal as a secondary toggleable console.
 
 ---
 

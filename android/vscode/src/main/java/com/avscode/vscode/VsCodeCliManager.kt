@@ -14,20 +14,19 @@ import java.io.File
 import java.io.FileOutputStream
 import java.io.RandomAccessFile
 import java.net.HttpURLConnection
+import java.net.ServerSocket
 import java.net.URL
-import java.util.regex.Pattern
 
 /**
- * Microsoft Visual Studio Code CLI and VS Code Tunnel manager.
+ * Microsoft Visual Studio Code CLI and Local VS Code Server Manager.
  *
- * Implements strict host/guest execution boundaries:
+ * Implements a fully local, offline-capable VS Code architecture:
  * - Official Microsoft ARM64 standalone CLI archive is downloaded on the Android host.
  * - Archive extraction and binary placement are performed strictly inside Linux userspace (`/usr/local/bin/code`).
  * - Guest bootstrap is performed via `/usr/local/lib/avscode/bootstrap.sh`.
  * - CLI presence is verified via `command -v code && code --version` inside PRoot.
- * - `code tunnel` is supervised inside Ubuntu userspace with real-time log streaming.
- * - Device code authentication prompts (`https://github.com/login/device`) and
- *   the resulting `https://vscode.dev/tunnel/...` connection endpoint are detected dynamically.
+ * - Local VS Code Server (`code serve-web`) is supervised inside Ubuntu userspace on a dynamic local port (`127.0.0.1:<port>`).
+ * - Serves directly over local loopback HTTP to the Android WebView with 0 network/cloud dependencies.
  */
 class VsCodeCliManager(
     private val context: Context,
@@ -45,19 +44,57 @@ class VsCodeCliManager(
         const val GUEST_DATA_DIR = "/home/user/.vscode-cli"
         const val GUEST_PROJECTS_DIR = "/home/user/projects"
 
-        // Timeouts
-        const val STARTUP_TIMEOUT_MS = 90_000L
-        const val AUTH_TIMEOUT_MS = 300_000L // 5 minutes for device login
+        // Default local host binding
+        const val DEFAULT_SERVER_HOST = "127.0.0.1"
 
-        // Regex patterns for parsing tunnel stdout
-        val TUNNEL_URL_REGEX = Regex("https://(?:insiders\\.)?vscode\\.dev/tunnel/[a-zA-Z0-9._-]+(?:/[^\\s]*)?")
-        val AUTH_URL_REGEX = Regex("https://(?:github\\.com/login/device|login\\.microsoft\\.com/device)")
-        val AUTH_CODE_REGEX = Regex("(?:code|enter the code|use code)[:\\s]+([A-Z0-9]{4,9}-[A-Z0-9]{4,9}|[A-Z0-9]{8,12})", RegexOption.IGNORE_CASE)
+        // Timeouts & intervals
+        const val STARTUP_TIMEOUT_MS = 60_000L
+        const val PROBE_INTERVAL_MS = 500L
+
+        /**
+         * Finds an ephemeral available TCP port on local loopback.
+         */
+        fun findAvailablePort(): Int {
+            return ServerSocket(0).use { it.localPort }
+        }
+
+        /**
+         * Builds the command to execute `code serve-web` locally inside PRoot userspace.
+         */
+        fun buildServerCommand(port: Int, host: String = DEFAULT_SERVER_HOST): String {
+            return "$GUEST_BIN_PATH serve-web " +
+                    "--host $host " +
+                    "--port $port " +
+                    "--without-connection-token " +
+                    "--accept-server-license-terms " +
+                    "--cli-data-dir $GUEST_DATA_DIR " +
+                    "--user-data-dir $GUEST_DATA_DIR/data"
+        }
+
+        /**
+         * Checks if the local loopback server responds to HTTP requests.
+         */
+        fun checkHttpReachable(port: Int, host: String = DEFAULT_SERVER_HOST): Boolean {
+            return try {
+                val url = URL("http://$host:$port")
+                val conn = url.openConnection() as HttpURLConnection
+                conn.connectTimeout = 800
+                conn.readTimeout = 800
+                conn.requestMethod = "GET"
+                conn.instanceFollowRedirects = false
+                val code = conn.responseCode
+                conn.disconnect()
+                code in 200..399
+            } catch (e: Exception) {
+                false
+            }
+        }
     }
 
     private val paths = AppPaths.getInstance(context)
-    private var tunnelPid: Int? = null
-    private var activeTunnelUrl: String? = null
+    private var serverPid: Int? = null
+    private var serverPort: Int? = null
+    private var activeServerUrl: String? = null
 
     /**
      * Check if Microsoft VS Code CLI binary is present in guest rootfs.
@@ -68,18 +105,27 @@ class VsCodeCliManager(
     }
 
     /**
-     * Check if tunnel process is currently running.
+     * Check if local server process is currently running.
      */
-    fun isTunnelRunning(): Boolean {
-        val pid = tunnelPid ?: return false
+    fun isServerRunning(): Boolean {
+        val pid = serverPid ?: return false
         val status = NativeSpawn.waitFor(pid, true)
         return status == -2
     }
 
+    fun isTunnelRunning(): Boolean = isServerRunning()
+
     /**
-     * Get the active vscode.dev tunnel URL if established.
+     * Get the active local server URL (e.g. http://127.0.0.1:port/?folder=/home/user/projects).
      */
-    fun getTunnelUrl(): String? = activeTunnelUrl
+    fun getServerUrl(): String? = activeServerUrl
+
+    fun getTunnelUrl(): String? = getServerUrl()
+
+    /**
+     * Get the active local listening port.
+     */
+    fun getServerPort(): Int? = serverPort
 
     /**
      * Executes the guest-side bootstrap script /usr/local/lib/avscode/bootstrap.sh inside PRoot.
@@ -241,72 +287,52 @@ class VsCodeCliManager(
     }
 
     /**
-     * Starts the Microsoft VS Code Tunnel inside Linux userspace.
+     * Starts the local Microsoft VS Code Server (`code serve-web`) inside Linux userspace.
      *
-     * - Checks if already logged in via `code tunnel user show`.
-     * - If not logged in, initiates login via `code tunnel user login --provider github`
-     *   and emits [onAuthRequired] with the verification URL and device code.
-     * - Spawns `code tunnel` daemon inside PRoot.
-     * - Monitors output in real time until `vscode.dev/tunnel/...` endpoint is established.
+     * - Cleans up any stale `code serve-web` processes inside the guest.
+     * - Allocates an ephemeral dynamic port if not explicitly provided.
+     * - Spawns the server bound strictly to loopback `127.0.0.1:<port>`.
+     * - Monitors server readiness via active HTTP polling until reachable.
+     * - Emits the local editor URL on success.
      *
-     * @param tunnelName Optional machine name for the tunnel (default: "avscode")
+     * @param port Optional specific port to bind to (defaults to dynamic port)
      * @param onLog Real-time output stream callback
-     * @param onAuthRequired Invoked when user authentication is required
-     * @param onTunnelReady Invoked when tunnel URL is obtained
+     * @param onServerReady Invoked when local HTTP server is reachable
      */
-    suspend fun startTunnel(
-        tunnelName: String = "avscode",
+    suspend fun startServer(
+        port: Int? = null,
         onLog: ((String) -> Unit)? = null,
-        onAuthRequired: ((authUrl: String, code: String?) -> Unit)? = null,
-        onTunnelReady: ((url: String) -> Unit)? = null
+        onServerReady: ((url: String) -> Unit)? = null
     ): Result<String> = withContext(Dispatchers.IO) {
-        AvsLogger.i(TAG, "Starting Microsoft VS Code Tunnel (name: $tunnelName)")
-
         runCatchingResult {
-            if (isTunnelRunning() && activeTunnelUrl != null) {
-                AvsLogger.i(TAG, "VS Code Tunnel already running at $activeTunnelUrl")
-                onLog?.invoke("[VS Code] Tunnel already active at $activeTunnelUrl")
-                return@runCatchingResult activeTunnelUrl!!
+            if (isServerRunning() && activeServerUrl != null) {
+                AvsLogger.i(TAG, "VS Code Server already running at $activeServerUrl")
+                onLog?.invoke("[VS Code] Server already active at $activeServerUrl")
+                return@runCatchingResult activeServerUrl!!
             }
 
             if (!isInstalled()) {
                 install { _, status -> onLog?.invoke(status) }.getOrThrow()
             }
 
+            // Cleanup stale processes before starting
+            cleanStaleProcesses()
+
+            val selectedPort = port ?: findAvailablePort()
+            serverPort = selectedPort
+
+            AvsLogger.i(TAG, "Starting local VS Code Server on 127.0.0.1:$selectedPort")
+            onLog?.invoke("[VS Code] Starting local server on 127.0.0.1:$selectedPort...")
+
             // Ensure workspace and CLI data directory exist
-            linuxRuntime.execute("mkdir -p $GUEST_PROJECTS_DIR $GUEST_DATA_DIR")
+            linuxRuntime.execute("mkdir -p $GUEST_PROJECTS_DIR $GUEST_DATA_DIR $GUEST_DATA_DIR/data")
 
-            // Check existing login status
-            val checkLoginResult = linuxRuntime.execute("$GUEST_BIN_PATH tunnel user show --cli-data-dir $GUEST_DATA_DIR")
-            val isUserLoggedIn = checkLoginResult.isSuccess && !checkLoginResult.getOrNull().orEmpty().contains("not logged in")
-
-            if (!isUserLoggedIn) {
-                AvsLogger.i(TAG, "VS Code Tunnel not logged in. Initiating device-code authentication...")
-                onLog?.invoke("[VS Code] Microsoft Tunnel authentication required.")
-                onLog?.invoke("[VS Code] Requesting device authorization code...")
-
-                val loginCmd = "$GUEST_BIN_PATH tunnel user login --provider github --cli-data-dir $GUEST_DATA_DIR"
-                val authCompleted = handleDeviceLogin(loginCmd, onLog, onAuthRequired)
-                if (!authCompleted) {
-                    throw RuntimeException("VS Code Tunnel authentication timed out or was cancelled")
-                }
-                onLog?.invoke("[VS Code] Authentication successful. Initializing tunnel...")
-            } else {
-                AvsLogger.i(TAG, "VS Code Tunnel already authenticated: ${checkLoginResult.getOrNull()?.trim()}")
-                onLog?.invoke("[VS Code] Logged in to tunnel: ${checkLoginResult.getOrNull()?.trim()}")
-            }
-
-            // Launch tunnel daemon inside Linux userspace
-            val logFile = paths.tunnelLogFile
+            val logFile = paths.serverLogFile
             if (logFile.exists()) logFile.delete()
             logFile.parentFile?.mkdirs()
 
-            val guestTunnelCmd = "$GUEST_BIN_PATH tunnel --accept-server-license-terms " +
-                    "--cli-data-dir $GUEST_DATA_DIR " +
-                    "--user-data-dir $GUEST_DATA_DIR/data " +
-                    "--name $tunnelName"
-
-            val args = linuxRuntime.buildPRootArgs(guestTunnelCmd, GUEST_PROJECTS_DIR)
+            val guestServerCmd = buildServerCommand(selectedPort, DEFAULT_SERVER_HOST)
+            val args = linuxRuntime.buildPRootArgs(guestServerCmd, GUEST_PROJECTS_DIR)
             val env = linuxRuntime.buildEnvironment("/home/user")
 
             val spawnResult = NativeSpawn.spawn(
@@ -314,167 +340,109 @@ class VsCodeCliManager(
                 env,
                 paths.rootfsDir.absolutePath,
                 logFile.absolutePath
-            ) ?: throw RuntimeException("Failed to spawn VS Code Tunnel process")
+            ) ?: throw RuntimeException("Failed to spawn local VS Code Server process")
 
-            tunnelPid = spawnResult[0]
-            AvsLogger.i(TAG, "VS Code Tunnel spawned with PID $tunnelPid, monitoring for vscode.dev endpoint...")
-            onLog?.invoke("[VS Code] Tunnel process spawned (PID $tunnelPid), awaiting connection URL...")
+            serverPid = spawnResult[0]
+            AvsLogger.i(TAG, "Local VS Code Server spawned (PID $serverPid), polling readiness on port $selectedPort...")
+            onLog?.invoke("[VS Code] Server process spawned (PID $serverPid), awaiting HTTP readiness...")
 
-            val detectedUrl = waitForTunnelUrl(logFile, onLog, onAuthRequired)
-            activeTunnelUrl = detectedUrl
-            onTunnelReady?.invoke(detectedUrl)
-            AvsLogger.i(TAG, "VS Code Tunnel ready at $detectedUrl")
-            onLog?.invoke("[VS Code] Tunnel ready at $detectedUrl")
+            val readyUrl = waitForServerReady(selectedPort, logFile, onLog)
+            activeServerUrl = readyUrl
+            onServerReady?.invoke(readyUrl)
 
-            detectedUrl
+            AvsLogger.i(TAG, "Local VS Code Server ready at $readyUrl")
+            onLog?.invoke("[VS Code] Local server reachable at $readyUrl")
+
+            readyUrl
         }
     }
 
     /**
-     * Executes device login command, parses authorization URL and code, and waits for completion.
+     * Polls the server endpoint until it responds to HTTP requests or fails fast if process terminates.
      */
-    private suspend fun handleDeviceLogin(
-        loginCmd: String,
-        onLog: ((String) -> Unit)?,
-        onAuthRequired: ((authUrl: String, code: String?) -> Unit)?
-    ): Boolean {
-        val logFile = File(paths.cacheDir, "login_${System.currentTimeMillis()}.log")
-        val args = linuxRuntime.buildPRootArgs(loginCmd, "/home/user")
-        val env = linuxRuntime.buildEnvironment("/home/user")
-
-        val spawnResult = NativeSpawn.spawn(
-            args.toTypedArray(),
-            env,
-            paths.rootfsDir.absolutePath,
-            logFile.absolutePath
-        ) ?: return false
-
-        val pid = spawnResult[0]
-        var lastPos = 0L
-        val startTime = System.currentTimeMillis()
-        var authNotified = false
-
-        try {
-            while (System.currentTimeMillis() - startTime < AUTH_TIMEOUT_MS) {
-                val status = NativeSpawn.waitFor(pid, true)
-
-                if (logFile.exists() && logFile.length() > lastPos) {
-                    RandomAccessFile(logFile, "r").use { raf ->
-                        raf.seek(lastPos)
-                        var line = raf.readLine()
-                        while (line != null) {
-                            onLog?.invoke(line)
-
-                            if (!authNotified) {
-                                val authUrlMatch = AUTH_URL_REGEX.find(line)
-                                val authCodeMatch = AUTH_CODE_REGEX.find(line)
-                                if (authUrlMatch != null) {
-                                    val authUrl = authUrlMatch.value
-                                    val authCode = authCodeMatch?.groupValues?.getOrNull(1)
-                                    AvsLogger.i(TAG, "Device code authentication required: url=$authUrl code=$authCode")
-                                    onAuthRequired?.invoke(authUrl, authCode)
-                                    authNotified = true
-                                }
-                            }
-                            line = raf.readLine()
-                        }
-                        lastPos = raf.filePointer
-                    }
-                }
-
-                if (status != -2) {
-                    return status == 0
-                }
-
-                delay(500)
-            }
-        } finally {
-            if (logFile.exists()) logFile.delete()
-        }
-
-        return false
-    }
-
-    /**
-     * Monitors tunnel log file until the vscode.dev URL is output.
-     */
-    private suspend fun waitForTunnelUrl(
+    private suspend fun waitForServerReady(
+        port: Int,
         logFile: File,
-        onLog: ((String) -> Unit)?,
-        onAuthRequired: ((authUrl: String, code: String?) -> Unit)?
+        onLog: ((String) -> Unit)?
     ): String {
-        val start = System.currentTimeMillis()
-        var lastPos = 0L
+        val startTime = System.currentTimeMillis()
+        var lastLogPos = 0L
 
-        while (System.currentTimeMillis() - start < STARTUP_TIMEOUT_MS) {
-            val pid = tunnelPid ?: throw RuntimeException("Tunnel process terminated")
-            val status = NativeSpawn.waitFor(pid, true)
+        while (System.currentTimeMillis() - startTime < STARTUP_TIMEOUT_MS) {
+            val pid = serverPid ?: throw RuntimeException("Server process reference lost")
+            val exitStatus = NativeSpawn.waitFor(pid, true)
 
-            if (logFile.exists() && logFile.length() > lastPos) {
+            // Read new log output
+            if (logFile.exists() && logFile.length() > lastLogPos) {
                 RandomAccessFile(logFile, "r").use { raf ->
-                    raf.seek(lastPos)
+                    raf.seek(lastLogPos)
                     var line = raf.readLine()
                     while (line != null) {
                         onLog?.invoke(line)
-
-                        // Check for device code authentication if required
-                        val authUrlMatch = AUTH_URL_REGEX.find(line)
-                        if (authUrlMatch != null) {
-                            val authUrl = authUrlMatch.value
-                            val authCode = AUTH_CODE_REGEX.find(line)?.groupValues?.getOrNull(1)
-                            onAuthRequired?.invoke(authUrl, authCode)
-                        }
-
-                        // Check for tunnel connection URL
-                        val urlMatch = TUNNEL_URL_REGEX.find(line)
-                        if (urlMatch != null) {
-                            return urlMatch.value
-                        }
-
                         line = raf.readLine()
                     }
-                    lastPos = raf.filePointer
+                    lastLogPos = raf.filePointer
                 }
             }
 
-            if (status != -2) {
+            // Check if process died
+            if (exitStatus != -2) {
                 val logs = if (logFile.exists()) logFile.readText() else "No logs"
-                throw RuntimeException("VS Code Tunnel exited unexpectedly with status $status:\n$logs")
+                throw RuntimeException("Local VS Code Server exited prematurely with code $exitStatus:\n$logs")
             }
 
-            delay(500)
+            // Probe HTTP endpoint
+            if (checkHttpReachable(port)) {
+                return "http://$DEFAULT_SERVER_HOST:$port/?folder=$GUEST_PROJECTS_DIR"
+            }
+
+            delay(PROBE_INTERVAL_MS)
         }
 
         val logs = if (logFile.exists()) logFile.readText().takeLast(2000) else "No logs"
-        throw RuntimeException("Timed out waiting for VS Code Tunnel URL after ${STARTUP_TIMEOUT_MS / 1000}s:\n$logs")
+        throw RuntimeException("Timed out waiting for local VS Code Server on port $port after ${STARTUP_TIMEOUT_MS / 1000}s:\n$logs")
+    }
+
+
+    private suspend fun cleanStaleProcesses() {
+        try {
+            linuxRuntime.execute("pkill -f 'code serve-web' 2>/dev/null || true")
+            delay(150)
+        } catch (e: Exception) {
+            AvsLogger.d(TAG, "Error cleaning stale processes: ${e.message}")
+        }
     }
 
     /**
-     * Stops the running VS Code Tunnel process group.
+     * Stops the local VS Code Server process group cleanly.
      */
-    suspend fun stopTunnel(): Result<Unit> = withContext(Dispatchers.IO) {
-        AvsLogger.i(TAG, "Stopping VS Code Tunnel")
+    suspend fun stopServer(): Result<Unit> = withContext(Dispatchers.IO) {
+        AvsLogger.i(TAG, "Stopping local VS Code Server")
 
         runCatchingResult {
-            tunnelPid?.let { pid ->
+            serverPid?.let { pid ->
                 NativeSpawn.kill(pid, 15) // SIGTERM
                 delay(200)
                 NativeSpawn.kill(pid, 9)  // SIGKILL
                 NativeSpawn.waitFor(pid, true)
             }
-            tunnelPid = null
-            activeTunnelUrl = null
+            serverPid = null
+            serverPort = null
+            activeServerUrl = null
 
-            linuxRuntime.execute("pkill -f 'code tunnel' 2>/dev/null || true")
-            AvsLogger.i(TAG, "VS Code Tunnel stopped")
+            cleanStaleProcesses()
+            AvsLogger.i(TAG, "Local VS Code Server stopped")
         }
     }
+
+    suspend fun stopTunnel(): Result<Unit> = stopServer()
 
     suspend fun getStatus(): VsCodeCliStatus = withContext(Dispatchers.IO) {
         VsCodeCliStatus(
             isInstalled = isInstalled(),
-            isRunning = isTunnelRunning(),
-            tunnelUrl = activeTunnelUrl
+            isRunning = isServerRunning(),
+            serverPort = serverPort,
+            serverUrl = activeServerUrl
         )
     }
 }
@@ -482,6 +450,7 @@ class VsCodeCliManager(
 data class VsCodeCliStatus(
     val isInstalled: Boolean,
     val isRunning: Boolean,
-    val tunnelUrl: String?
+    val serverPort: Int? = null,
+    val serverUrl: String? = null,
+    val tunnelUrl: String? = serverUrl
 )
-
