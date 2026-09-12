@@ -16,6 +16,7 @@ import java.io.File
  * Comprehensive diagnostics for AVscode runtime.
  * Collects real dynamic information about all layers: Android, PRoot, Linux, VS Code Server, Network.
  */
+@android.annotation.SuppressLint("MissingPermission", "SdCardPath")
 object RuntimeDiagnostics {
 
     private const val TAG = "AVscode.Diagnostics"

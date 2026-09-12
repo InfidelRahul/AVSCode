@@ -16,6 +16,7 @@ set(PROOT_CANDIDATE_DIRS
     "${CMAKE_CURRENT_SOURCE_DIR}/../../../../../proot-repo"
     "${CMAKE_CURRENT_SOURCE_DIR}/../../../../proot-repo"
     "$ENV{PROOT_REPO}"
+    "$ENV{GITHUB_WORKSPACE}/proot-repo"
     "/workspaces/AVSCode/proot-repo"
 )
 
@@ -26,6 +27,21 @@ foreach(dir ${PROOT_CANDIDATE_DIRS})
         break()
     endif()
 endforeach()
+
+if(NOT PROOT_REPO_DIR)
+    find_package(Git QUIET)
+    if(GIT_FOUND)
+        message(STATUS "Attempting to initialize proot-repo submodule via git...")
+        execute_process(
+            COMMAND ${GIT_EXECUTABLE} submodule update --init --recursive proot-repo
+            WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/../../../../.."
+            RESULT_VARIABLE GIT_SUBMOD_RESULT
+        )
+        if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/../../../../../proot-repo/CMakeLists.txt")
+            get_filename_component(PROOT_REPO_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../../../../../proot-repo" ABSOLUTE)
+        endif()
+    endif()
+endif()
 
 if(NOT PROOT_REPO_DIR)
     message(FATAL_ERROR "LinuxDroid PRoot repository not found. Checked: ${PROOT_CANDIDATE_DIRS}")

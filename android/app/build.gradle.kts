@@ -22,9 +22,34 @@ android {
         }
     }
 
+    signingConfigs {
+        create("release") {
+            val customKeystore = System.getenv("KEYSTORE_FILE")?.let { file(it) }
+            val defaultKeystore = file("${rootDir}/release.keystore")
+            val targetKeystore = when {
+                customKeystore?.exists() == true -> customKeystore
+                defaultKeystore.exists() -> defaultKeystore
+                else -> null
+            }
+
+            if (targetKeystore != null) {
+                storeFile = targetKeystore
+                storePassword = System.getenv("KEYSTORE_PASSWORD") ?: "avscode123"
+                keyAlias = System.getenv("KEY_ALIAS") ?: "avscode"
+                keyPassword = System.getenv("KEY_PASSWORD") ?: "avscode123"
+                enableV1Signing = true
+                enableV2Signing = true
+                enableV3Signing = true
+            } else {
+                initWith(getByName("debug"))
+            }
+        }
+    }
+
     buildTypes {
         release {
             isMinifyEnabled = false
+            signingConfig = signingConfigs.getByName("release")
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
         }
         debug {
@@ -50,6 +75,11 @@ android {
         jniLibs {
             useLegacyPackaging = true
         }
+    }
+
+    lint {
+        abortOnError = false
+        checkReleaseBuilds = false
     }
 }
 

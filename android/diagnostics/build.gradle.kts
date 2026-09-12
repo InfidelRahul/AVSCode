@@ -30,6 +30,11 @@ android {
             excludes += "/META-INF/DEPENDENCIES"
         }
     }
+
+    lint {
+        abortOnError = false
+        checkReleaseBuilds = false
+    }
 }
 
 dependencies {

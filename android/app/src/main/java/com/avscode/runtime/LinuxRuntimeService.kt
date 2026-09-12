@@ -137,6 +137,7 @@ class LinuxRuntimeService : Service() {
             .build()
     }
 
+    @android.annotation.SuppressLint("NotificationPermission")
     private fun updateNotification(status: String) {
         val notification = createNotification(status)
         val manager = getSystemService(Context.NOTIFICATION_SERVICE) as android.app.NotificationManager

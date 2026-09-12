@@ -25,6 +25,8 @@ buildOutputCleanup/
 
 # Local configuration file (sdk path, etc)
 local.properties
+*.keystore
+*.jks
 
 # Log Files
 *.log

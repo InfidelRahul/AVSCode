@@ -1,101 +1,43 @@
-# AVscode CI/CD Pipeline
+# AVSCode Unified CI/CD Pipeline
 
 ## Overview
 
-This directory contains GitHub Actions workflows for building, testing, and releasing AVscode.
+This directory contains the single, authoritative GitHub Actions workflow for building, testing, signing, and releasing AVSCode.
 
-## Workflows
+## Workflow: `ci.yml` (AVSCode CI & Signed Release Build)
 
-### 1. CI Pipeline (`ci.yml`)
-**Triggers:** Push to `main`/`develop`, Pull Requests
+**Triggers:**
+- Push to `main` and `develop`
+- Tags (`v*`)
+- Pull requests to `main` and `develop`
+- Manual dispatch (`workflow_dispatch`)
 
-**Steps:**
-1. Checkout code
-2. Setup JDK 21
-3. Install Android SDK & NDK 29
-4. Run lint checks
-5. Compile all modules
-6. Run unit tests (if any)
-7. Verify APK generation
-8. Display build information
-9. Upload APK artifact (retention: 1 day)
-10. Upload build logs on failure
+### Pipeline Steps:
+1. **Checkout Code & Submodules**: Recursive checkout of repository and `proot-repo` submodule.
+2. **Setup JDK 21**: Microsoft Temurin JDK 21.
+3. **Setup Gradle & Cache**: Gradle 9.x wrapper setup.
+4. **Install Android SDK & NDK 29**: Platform 36, build-tools 35.0.0, NDK 29.0.14206865, and CMake 3.22.1.
+5. **Setup Release Keystore**: Decodes `KEYSTORE_BASE64` secret if provided, or generates a deterministic release keystore automatically.
+6. **Run Unit Tests**: Executes `./gradlew test` across all modules.
+7. **Build Signed Release APK**: Executes `./gradlew assembleRelease` generating a fully signed release APK.
+8. **Verify Signature**: Verifies APK signature scheme (v1/v2/v3) with `apksigner`.
+9. **Upload Signed APK Artifact**: Artifact `avscode-signed-release-apk` retained for 7 days.
+10. **Publish GitHub Release**: Automatically creates GitHub release when triggered by version tag `v*` or manual dispatch.
+11. **Upload Failure Logs**: Diagnostic reports uploaded on build failure.
 
-**Artifacts:**
-- `avscode-debug-apk-{commit-sha}` - Debug APK valid for 1 day
+## Artifacts
 
-### 2. Build Workflow (`build.yml`)
-**Triggers:** Push to `main`/`develop`, Pull Requests
-
-**Steps:**
-1. Checkout code
-2. Setup JDK 21
-3. Install Android SDK & NDK 29
-4. Build debug APK
-5. Upload artifact
-
-**Artifacts:**
-- `avscode-debug-apk` - Debug APK valid for 1 day
-
-### 3. Release Workflow (`release.yml`)
-**Triggers:** Git tags (`v*`), Manual dispatch
-
-**Steps:**
-1. Checkout code
-2. Setup JDK 21
-3. Install Android SDK & NDK 29
-4. Build debug and release APKs
-5. Upload both artifacts
-6. Create GitHub release (if tagged)
-
-**Artifacts:**
-- `avscode-debug-apk` - Debug APK valid for 1 day
-- `avscode-release-apk` - Release APK valid for 1 day
+- **`avscode-signed-release-apk`**: `app-release.apk` (Signed Release APK)
 
 ## Usage
 
 ### Automatic Builds
-Push to `main` or `develop` branch to trigger CI automatically.
+Every push and pull request runs unit tests and compiles the signed release APK.
 
-### Manual Release
-1. Go to Actions tab
-2. Select "Build AVscode Release APK"
-3. Click "Run workflow"
-4. Enter version number
-5. Download APK from artifacts
-
-### Tagged Release
+### Release via Git Tag
 ```bash
 git tag v1.0.0
 git push origin v1.0.0
 ```
-This will automatically create a draft release with APKs attached.
+This automatically builds the signed release APK and creates a GitHub Release with the APK attached.
 
-## Artifact Retention
-
-All APK artifacts are retained for **1 day** only to save storage space. Download immediately after build completion.
-
-## Requirements
-
-- GitHub Actions runners with Ubuntu
-- Android SDK license acceptance (handled automatically)
-- ~15GB disk space for Android SDK + NDK + build artifacts
-
-## Troubleshooting
-
-### Build Fails
-1. Check "Display Build Info" step for details
-2. Review build logs in artifacts
-3. Run locally: `./build.sh debug`
-
-### NDK Not Found
-Ensure NDK 29 is installed in the runner (handled by workflow).
-
-### APK Not Generated
-Check compilation errors in the "Compile All Modules" step.
-
-## Security Notes
-
-- Release APKs are unsigned (requires manual signing for production)
-- Debug APKs should not be distributed publicly
-- Never commit signing keys to repository
