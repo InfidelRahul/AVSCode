@@ -37,9 +37,6 @@ android {
                 storePassword = System.getenv("KEYSTORE_PASSWORD") ?: "avscode123"
                 keyAlias = System.getenv("KEY_ALIAS") ?: "avscode"
                 keyPassword = System.getenv("KEY_PASSWORD") ?: "avscode123"
-                enableV1Signing = true
-                enableV2Signing = true
-                enableV3Signing = true
             } else {
                 initWith(getByName("debug"))
             }
