@@ -1,6 +1,5 @@
 plugins {
     id("com.android.application")
-    id("org.jetbrains.kotlin.android")
     id("org.jetbrains.kotlin.plugin.serialization")
 }
 
@@ -19,7 +18,7 @@ android {
         
         ndk {
             abiFilters += listOf("arm64-v8a")
-            ndkVersion = "29.0.14206865"  // NDK r29 (latest stable)
+            ndkVersion = "29.0.14206865"
         }
     }
 
@@ -30,7 +29,6 @@ android {
         }
         debug {
             isDebuggable = true
-            isProfileable = true
         }
     }
     
@@ -39,24 +37,9 @@ android {
         targetCompatibility = JavaVersion.VERSION_17
     }
     
-    compilerOptions {
-        jvmTarget.set("17")
-        freeCompilerArgs.addAll(
-            "-opt-in=kotlin.RequiresOptIn",
-            "-opt-in=kotlinx.coroutines.ExperimentalCoroutinesApi"
-        )
-    }
-    
     buildFeatures {
         viewBinding = true
         buildConfig = true
-    }
-    
-    externalNativeBuild {
-        cmake {
-            path = file("../runtime/src/main/cpp/CMakeLists.txt")
-            version = "4.4.3"
-        }
     }
     
     packaging {
@@ -65,7 +48,7 @@ android {
             excludes += "/META-INF/DEPENDENCIES"
         }
         jniLibs {
-            useLegacyPackaging = false
+            useLegacyPackaging = true
         }
     }
 }
@@ -76,11 +59,9 @@ dependencies {
     implementation(project(":rootfs"))
     implementation(project(":vscode"))
     implementation(project(":web"))
-    implementation(project(":storage"))
     implementation(project(":diagnostics"))
-    implementation(project(":ui"))
     
-    // Core Android libraries - latest stable versions
+    // Core Android libraries
     implementation("androidx.core:core-ktx:1.15.0")
     implementation("androidx.appcompat:appcompat:1.7.0")
     implementation("com.google.android.material:material:1.12.0")

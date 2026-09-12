@@ -1,0 +1,4 @@
+[submodule "proot-repo"]
+	path = proot-repo
+	url = https://github.com/LinuxDroidapp/proot.git
+

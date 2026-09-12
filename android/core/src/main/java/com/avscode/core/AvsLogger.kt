@@ -77,15 +77,19 @@ object AvsLogger {
                     }
                     _errors.value = errorHistory.toList()
                 }
-                Log.e(tag, message, throwable)
+                try {
+                    Log.e(tag, message, throwable)
+                } catch (_: Throwable) {}
             }
             LogEntry.Level.WARN -> {
                 _warnings.value = (_warnings.value + entry).takeLast(maxErrors)
-                Log.w(tag, message)
+                try {
+                    Log.w(tag, message)
+                } catch (_: Throwable) {}
             }
-            LogEntry.Level.INFO -> Log.i(tag, message)
-            LogEntry.Level.DEBUG -> Log.d(tag, message)
-            LogEntry.Level.VERBOSE -> Log.v(tag, message)
+            LogEntry.Level.INFO -> try { Log.i(tag, message) } catch (_: Throwable) {}
+            LogEntry.Level.DEBUG -> try { Log.d(tag, message) } catch (_: Throwable) {}
+            LogEntry.Level.VERBOSE -> try { Log.v(tag, message) } catch (_: Throwable) {}
         }
         
         // Notify callback

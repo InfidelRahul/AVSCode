@@ -1,6 +1,5 @@
 plugins {
     id("com.android.library")
-    id("org.jetbrains.kotlin.android")
 }
 
 android {
@@ -17,7 +16,6 @@ android {
             isMinifyEnabled = false
         }
         debug {
-            isDebuggable = true
         }
     }
 
@@ -26,12 +24,8 @@ android {
         targetCompatibility = JavaVersion.VERSION_17
     }
 
-    compilerOptions {
-        jvmTarget.set("17")
-        freeCompilerArgs.addAll(
-            "-opt-in=kotlin.RequiresOptIn",
-            "-opt-in=kotlinx.coroutines.ExperimentalCoroutinesApi"
-        )
+    testOptions {
+        unitTests.isReturnDefaultValues = true
     }
 
     packaging {
@@ -47,4 +41,5 @@ dependencies {
     implementation(project(":runtime"))
     implementation("androidx.core:core-ktx:1.15.0")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-core:1.10.1")
+    testImplementation("junit:junit:4.13.2")
 }

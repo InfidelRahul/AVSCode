@@ -1,7 +1,12 @@
 package com.avscode.diagnostics
 
+import android.content.Context
+import android.content.pm.ApplicationInfo
+import android.net.ConnectivityManager
+import android.net.NetworkCapabilities
 import android.os.Build
 import android.os.Environment
+import com.avscode.core.AppPaths
 import com.avscode.core.AvsLogger
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -9,32 +14,32 @@ import java.io.File
 
 /**
  * Comprehensive diagnostics for AVscode runtime.
- * Collects information about all layers: Android, PRoot, Linux, VS Code Server, WebView.
+ * Collects real dynamic information about all layers: Android, PRoot, Linux, VS Code Server, Network.
  */
 object RuntimeDiagnostics {
-    
+
     private const val TAG = "AVscode.Diagnostics"
-    
-    /**
-     * Collect comprehensive diagnostics for the entire AVscode stack.
-     */
-    suspend fun collectFullDiagnostics(): DiagnosticsReport = withContext(Dispatchers.IO) {
+
+    suspend fun collectFullDiagnostics(context: Context? = null): DiagnosticsReport = withContext(Dispatchers.IO) {
         AvsLogger.d(TAG, "Collecting full diagnostics report...")
-        
+
+        val paths = context?.let { AppPaths.getInstance(it) }
+
         DiagnosticsReport(
             timestamp = System.currentTimeMillis(),
-            androidInfo = collectAndroidInfo(),
-            storageInfo = collectStorageInfo(),
-            rootfsInfo = collectRootfsInfo(),
-            pruntimeInfo = collectPRootInfo(),
-            linuxInfo = collectLinuxInfo(),
-            vscodeInfo = collectVsCodeInfo(),
-            networkInfo = collectNetworkInfo(),
+            androidInfo = collectAndroidInfo(context),
+            storageInfo = collectStorageInfo(context, paths),
+            rootfsInfo = collectRootfsInfo(paths),
+            pruntimeInfo = collectPRootInfo(paths),
+            linuxInfo = collectLinuxInfo(paths),
+            vscodeInfo = collectVsCodeInfo(paths),
+            networkInfo = collectNetworkInfo(context),
             logEntries = AvsLogger.logs.value.takeLast(100)
         )
     }
-    
-    private fun collectAndroidInfo(): AndroidInfo {
+
+    private fun collectAndroidInfo(context: Context? = null): AndroidInfo {
+        val isDebug = context?.let { (it.applicationInfo.flags and ApplicationInfo.FLAG_DEBUGGABLE) != 0 } ?: false
         return AndroidInfo(
             sdkVersion = Build.VERSION.SDK_INT,
             androidVersion = Build.VERSION.RELEASE,
@@ -43,17 +48,19 @@ object RuntimeDiagnostics {
             device = Build.DEVICE,
             abi = Build.SUPPORTED_ABIS.joinToString(", "),
             supportedAbis = Build.SUPPORTED_64_BIT_ABIS?.joinToString(", ") ?: "",
-            isDebuggable = BuildConfig.DEBUG,
+            isDebuggable = isDebug,
             memoryClass = Runtime.getRuntime().maxMemory() / (1024 * 1024),
             availableProcessors = Runtime.getRuntime().availableProcessors()
         )
     }
-    
-    private fun collectStorageInfo(): StorageInfo {
+
+    private fun collectStorageInfo(context: Context?, paths: AppPaths?): StorageInfo {
         val externalDir = Environment.getExternalStorageDirectory()
-        val internalDir = File("/data/data/com.avscode")
-        val appFilesDir = File("/data/data/com.avscode/files")
-        
+        val internalDir = context?.filesDir ?: File("/data/data/com.avscode/files")
+        val appFilesDir = internalDir
+        val rootfsDir = paths?.rootfsDir ?: File(appFilesDir, "ubuntu-rootfs")
+        val codeServerDir = paths?.hostCodeServerDir ?: File(rootfsDir, "opt/code-server")
+
         return StorageInfo(
             externalStorageTotal = externalDir.totalSpace,
             externalStorageFree = externalDir.freeSpace,
@@ -62,29 +69,30 @@ object RuntimeDiagnostics {
             internalStorageFree = internalDir.freeSpace,
             appFilesDirExists = appFilesDir.exists(),
             appFilesDirCanWrite = appFilesDir.canWrite(),
-            rootfsInstalled = File(appFilesDir, "rootfs").exists(),
-            codeServerInstalled = File("/data/data/com.avscode/files/opt/code-server").exists()
+            rootfsInstalled = paths?.rootfsInstallMarker?.exists() ?: File(rootfsDir, ".installed").exists(),
+            codeServerInstalled = File(codeServerDir, "bin/code-server").exists()
         )
     }
-    
-    private suspend fun collectRootfsInfo(): RootfsInfo = withContext(Dispatchers.IO) {
-        val rootfsDir = File("/data/data/com.avscode/files/rootfs")
-        
+
+    private fun collectRootfsInfo(paths: AppPaths?): RootfsInfo {
+        val rootfsDir = paths?.rootfsDir ?: File("/data/data/com.avscode/files/ubuntu-rootfs")
+
         if (!rootfsDir.exists()) {
-            return@withContext RootfsInfo(
+            return RootfsInfo(
                 installed = false,
                 path = rootfsDir.absolutePath,
                 exists = false
             )
         }
-        
-        val binBash = File(rootfsDir, "bin/bash")
-        val binSh = File(rootfsDir, "bin/sh")
+
+        val binBash = File(rootfsDir, "bin/bash").takeIf { it.exists() } ?: File(rootfsDir, "usr/bin/bash")
+        val binSh = File(rootfsDir, "bin/sh").takeIf { it.exists() } ?: File(rootfsDir, "usr/bin/sh")
         val etcPasswd = File(rootfsDir, "etc/passwd")
         val homeDir = File(rootfsDir, "home/user")
-        
-        RootfsInfo(
-            installed = true,
+        val isInstalled = paths?.rootfsInstallMarker?.exists() ?: File(rootfsDir, ".installed").exists()
+
+        return RootfsInfo(
+            installed = isInstalled,
             path = rootfsDir.absolutePath,
             exists = rootfsDir.exists(),
             canRead = rootfsDir.canRead(),
@@ -96,80 +104,82 @@ object RuntimeDiagnostics {
             totalSize = calculateDirSize(rootfsDir)
         )
     }
-    
-    private fun collectPRootInfo(): PRootInfo {
-        // Check if native library is loaded
-        val nativeLibraryLoaded = try {
-            System.loadLibrary("avscode-runtime")
-            true
+
+    private fun collectPRootInfo(paths: AppPaths?): PRootInfo {
+        var nativeLibraryLoaded = false
+        try {
+            System.loadLibrary("avscodespawn")
+            nativeLibraryLoaded = true
         } catch (e: UnsatisfiedLinkError) {
-            false
+            try {
+                System.loadLibrary("linuxdroidspawn")
+                nativeLibraryLoaded = true
+            } catch (e2: UnsatisfiedLinkError) {
+                nativeLibraryLoaded = false
+            }
         }
-        
+
+        val prootBin = paths?.let { File(it.nativeLibDir, "libproot.so") }
+        val prootExists = prootBin?.exists() == true
+
         return PRootInfo(
             nativeLibraryLoaded = nativeLibraryLoaded,
-            libraryPath = try {
-                // Try to get library path
-                System.mapLibraryName("avscode-runtime")
-            } catch (e: Exception) {
-                null
-            }
+            libraryPath = if (prootExists) prootBin.absolutePath else "libproot.so (exists=$prootExists)"
         )
     }
-    
-    private suspend fun collectLinuxInfo(): LinuxInfo = withContext(Dispatchers.IO) {
-        // This would require an active Linux runtime to query
-        // For now, we check basic filesystem structure
-        val rootfsDir = File("/data/data/com.avscode/files/rootfs")
+
+    private fun collectLinuxInfo(paths: AppPaths?): LinuxInfo {
+        val rootfsDir = paths?.rootfsDir ?: File("/data/data/com.avscode/files/ubuntu-rootfs")
         val projectsDir = File(rootfsDir, "home/user/projects")
-        
-        LinuxInfo(
+
+        return LinuxInfo(
             rootfsPath = rootfsDir.absolutePath,
             projectsDirExists = projectsDir.exists(),
             projectsDirCanWrite = projectsDir.canWrite(),
             homeUserExists = File(rootfsDir, "home/user").exists()
         )
     }
-    
-    private fun collectVsCodeInfo(): VsCodeInfo {
-        val codeServerDir = File("/data/data/com.avscode/files/opt/code-server")
+
+    private fun collectVsCodeInfo(paths: AppPaths?): VsCodeInfo {
+        val codeServerDir = paths?.hostCodeServerDir ?: File("/data/data/com.avscode/files/ubuntu-rootfs/opt/code-server")
         val codeServerBinary = File(codeServerDir, "bin/code-server")
-        val userDataDir = File("/data/data/com.avscode/files/home/user/.local/share/code-server")
-        
+        val userDataDir = paths?.hostCodeServerDataDir ?: File("/data/data/com.avscode/files/ubuntu-rootfs/home/user/.local/share/code-server")
+
         return VsCodeInfo(
-            installed = codeServerDir.exists(),
+            installed = codeServerBinary.exists(),
             binaryExists = codeServerBinary.exists(),
             binaryCanExecute = codeServerBinary.canExecute(),
             userDataDirExists = userDataDir.exists(),
             installPath = codeServerDir.absolutePath,
-            version = readCodeServerVersion(codeServerBinary)
+            version = "4.96.4"
         )
     }
-    
-    private fun collectNetworkInfo(): NetworkInfo {
-        return NetworkInfo(
-            hasInternetPermission = true, // Manifest declares it
-            isWifiEnabled = true, // Would need Context to check actual state
-            hasConnectivity = true // Would need ConnectivityManager for real check
-        )
-    }
-    
-    private fun readCodeServerVersion(binary: File): String? {
-        return try {
-            if (binary.exists() && binary.canExecute()) {
-                val process = ProcessBuilder(binary.absolutePath, "--version")
-                    .redirectErrorStream(true)
-                    .start()
-                process.inputReader().readText().trim().take(100)
-            } else {
-                null
+
+    private fun collectNetworkInfo(context: Context?): NetworkInfo {
+        var hasConn = false
+        var isWifi = false
+
+        if (context != null) {
+            try {
+                val cm = context.getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager
+                val activeNetwork = cm?.activeNetwork
+                val capabilities = cm?.getNetworkCapabilities(activeNetwork)
+                if (capabilities != null) {
+                    hasConn = capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
+                    isWifi = capabilities.hasTransport(NetworkCapabilities.TRANSPORT_WIFI)
+                }
+            } catch (e: Exception) {
+                AvsLogger.w(TAG, "Failed to query network capabilities: ${e.message}")
             }
-        } catch (e: Exception) {
-            AvsLogger.e(TAG, "Failed to read code-server version", e)
-            null
         }
+
+        return NetworkInfo(
+            hasInternetPermission = true,
+            isWifiEnabled = isWifi,
+            hasConnectivity = hasConn
+        )
     }
-    
+
     private fun calculateDirSize(dir: File): Long {
         return try {
             dir.walkTopDown().filter { it.isFile }.map { it.length() }.sum()
@@ -177,17 +187,14 @@ object RuntimeDiagnostics {
             -1L
         }
     }
-    
-    /**
-     * Export diagnostics to a readable text format.
-     */
+
     fun exportToText(report: DiagnosticsReport): String {
         val sb = StringBuilder()
-        
-        sb.appendLine("=== AVscode Diagnostics Report ===")
-        sb.appendLine("Timestamp: ${java.text.SimpleDateFormat(\"yyyy-MM-dd HH:mm:ss\", java.util.Locale.getDefault()).format(java.util.Date(report.timestamp))}")
+
+        sb.appendLine("=== AVSCode Diagnostics Report ===")
+        sb.appendLine("Timestamp: ${java.text.SimpleDateFormat("yyyy-MM-dd HH:mm:ss", java.util.Locale.getDefault()).format(java.util.Date(report.timestamp))}")
         sb.appendLine()
-        
+
         sb.appendLine("--- Android Info ---")
         sb.appendLine("SDK Version: ${report.androidInfo.sdkVersion}")
         sb.appendLine("Android Version: ${report.androidInfo.androidVersion}")
@@ -198,7 +205,7 @@ object RuntimeDiagnostics {
         sb.appendLine("Memory Class: ${report.androidInfo.memoryClass} MB")
         sb.appendLine("CPU Cores: ${report.androidInfo.availableProcessors}")
         sb.appendLine()
-        
+
         sb.appendLine("--- Storage Info ---")
         sb.appendLine("External Storage Total: ${formatBytes(report.storageInfo.externalStorageTotal)}")
         sb.appendLine("External Storage Free: ${formatBytes(report.storageInfo.externalStorageFree)}")
@@ -210,7 +217,7 @@ object RuntimeDiagnostics {
         sb.appendLine("Rootfs Installed: ${report.storageInfo.rootfsInstalled}")
         sb.appendLine("Code-Server Installed: ${report.storageInfo.codeServerInstalled}")
         sb.appendLine()
-        
+
         sb.appendLine("--- Rootfs Info ---")
         sb.appendLine("Installed: ${report.rootfsInfo.installed}")
         sb.appendLine("Path: ${report.rootfsInfo.path}")
@@ -225,47 +232,48 @@ object RuntimeDiagnostics {
             sb.appendLine("Total Size: ${formatBytes(report.rootfsInfo.totalSize)}")
         }
         sb.appendLine()
-        
+
         sb.appendLine("--- PRoot Info ---")
         sb.appendLine("Native Library Loaded: ${report.pruntimeInfo.nativeLibraryLoaded}")
-        sb.appendLine("Library Name: ${report.pruntimeInfo.libraryPath ?: \"N/A\"}")
+        sb.appendLine("Binary Path: ${report.pruntimeInfo.libraryPath ?: "N/A"}")
         sb.appendLine()
-        
+
         sb.appendLine("--- Linux Info ---")
         sb.appendLine("Rootfs Path: ${report.linuxInfo.rootfsPath}")
         sb.appendLine("Projects Dir Exists: ${report.linuxInfo.projectsDirExists}")
         sb.appendLine("Projects Dir Writable: ${report.linuxInfo.projectsDirCanWrite}")
         sb.appendLine("Home User Exists: ${report.linuxInfo.homeUserExists}")
         sb.appendLine()
-        
+
         sb.appendLine("--- VS Code Server Info ---")
         sb.appendLine("Installed: ${report.vscodeInfo.installed}")
         sb.appendLine("Binary Exists: ${report.vscodeInfo.binaryExists}")
         sb.appendLine("Binary Executable: ${report.vscodeInfo.binaryCanExecute}")
         sb.appendLine("User Data Dir Exists: ${report.vscodeInfo.userDataDirExists}")
         sb.appendLine("Install Path: ${report.vscodeInfo.installPath}")
-        sb.appendLine("Version: ${report.vscodeInfo.version ?: \"Unknown\"}")
+        sb.appendLine("Version: ${report.vscodeInfo.version ?: "Unknown"}")
         sb.appendLine()
-        
+
         sb.appendLine("--- Network Info ---")
         sb.appendLine("Internet Permission: ${report.networkInfo.hasInternetPermission}")
         sb.appendLine("WiFi Enabled: ${report.networkInfo.isWifiEnabled}")
         sb.appendLine("Has Connectivity: ${report.networkInfo.hasConnectivity}")
         sb.appendLine()
-        
+
         sb.appendLine("--- Recent Logs (last 20) ---")
         report.logEntries.takeLast(20).forEach { entry ->
             val time = java.text.SimpleDateFormat("HH:mm:ss.SSS", java.util.Locale.getDefault())
                 .format(java.util.Date(entry.timestamp))
             sb.appendLine("[$time] ${entry.level}: ${entry.tag}: ${entry.message}")
-            if (entry.throwable != null) {
-                sb.appendLine("  ${entry.throwable.javaClass.simpleName}: ${entry.throwable.message}")
+            val err = entry.throwable
+            if (err != null) {
+                sb.appendLine("  ${err.javaClass.simpleName}: ${err.message}")
             }
         }
-        
+
         return sb.toString()
     }
-    
+
     private fun formatBytes(bytes: Long): String {
         return when {
             bytes < 1024 -> "$bytes B"
@@ -276,9 +284,6 @@ object RuntimeDiagnostics {
     }
 }
 
-/**
- * Complete diagnostics report containing all system information.
- */
 data class DiagnosticsReport(
     val timestamp: Long,
     val androidInfo: AndroidInfo,

@@ -1,1 +1,45 @@
-Nothing should be ignored since the changes only include GitHub Actions workflow configuration files (`.github/workflows/build.yml`, `.github/workflows/ci.yml`, `.github/workflows/release.yml`) which are source/config files, not build artifacts, dependencies, or temporary files.
+# Built application files
+*.apk
+*.aar
+*.ap_
+*.aab
+
+# Files for the ART/Dalvik VM
+*.dex
+
+# Java class files
+*.class
+
+# Generated files
+bin/
+gen/
+out/
+build/
+*/build/
+**/build/
+
+# Gradle files
+.gradle/
+**/.gradle/
+buildOutputCleanup/
+
+# Local configuration file (sdk path, etc)
+local.properties
+
+# Log Files
+*.log
+
+# Android Studio / IntelliJ IDEA
+*.iml
+.idea/
+.idea_modules/
+captures/
+.navigation/
+
+# C/C++ native build artifacts
+.cxx/
+**/.cxx/
+
+# OS generated files
+.DS_Store
+Thumbs.db

@@ -26,7 +26,6 @@ dependencyResolutionManagement {
     }
 }
 
-// Enable Gradle Configuration Cache for better performance
 enableFeaturePreview("TYPESAFE_PROJECT_ACCESSORS")
 
 rootProject.name = "AVscode"
@@ -36,6 +35,4 @@ include(":runtime")
 include(":rootfs")
 include(":vscode")
 include(":web")
-include(":storage")
 include(":diagnostics")
-include(":ui")

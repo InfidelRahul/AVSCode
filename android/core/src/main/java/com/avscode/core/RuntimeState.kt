@@ -18,6 +18,23 @@ enum class RuntimeState {
 }
 
 /**
+ * High-level application state observed by UI.
+ */
+sealed class AppState {
+    object NotInstalled : AppState()
+    data class InstallingRootfs(val progress: Float, val status: String) : AppState()
+    object StartingLinux : AppState()
+    data class Bootstrapping(val status: String) : AppState()
+    object StartingVsCode : AppState()
+    data class Ready(val url: String) : AppState()
+    object Stopping : AppState()
+    data class Failed(val message: String, val throwable: Throwable? = null) : AppState()
+
+    val isReady: Boolean get() = this is Ready
+    val isFailed: Boolean get() = this is Failed
+}
+
+/**
  * Core result type for operations that can fail.
  */
 sealed class Result<out T> {
