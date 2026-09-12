@@ -1,159 +1,180 @@
-# AVscode - VS Code for Android
+# AVSCode — VS Code for Android
 
-A complete Android application that runs VS Code (via code-server) inside a Linux userspace using PRoot, presenting VS Code Web through an Android WebView.
+[![AVSCode CI & Signed Release Build](https://github.com/InfidelRahul/AVSCode/actions/workflows/ci.yml/badge.svg)](https://github.com/InfidelRahul/AVSCode/actions/workflows/ci.yml)
+[![Platform](https://img.shields.io/badge/Platform-Android%209.0%2B%20(API%2028--36)-green.svg)](https://developer.android.com)
+[![Architecture](https://img.shields.io/badge/Architecture-ARM64%20(16KB%20Aligned)-blue.svg)](https://developer.android.com/guide/practices/page-sizes)
+[![License](https://img.shields.io/badge/License-Apache%202.0-orange.svg)](LICENSE)
 
-## Architecture
+**AVSCode** is a native Android application that runs a complete, persistent Visual Studio Code environment locally on Android devices without requiring root access.
+
+The application embeds an Ubuntu ARM64 Linux userspace powered by **LinuxDroid PRoot**, manages a local **VS Code Server (`code-server`)** instance, and provides an optimized, hardware-accelerated **Android WebView** user interface.
+
+---
+
+## Highlights
+
+- **No Root Required**: Executes fully within user application sandbox using PRoot syscall emulation.
+- **Official VS Code Server**: Runs upstream `code-server` v4.96.4 inside the Linux environment.
+- **Android 15/16 Ready**: All native binaries (`libproot.so`, `libavscodespawn.so`, etc.) compiled with **16KB page-size alignment** (`-Wl,-z,max-page-size=16384`).
+- **Complete Development Toolchain**: Ubuntu ARM64 userspace with Python 3, Git, Node.js, npm, and apt package manager.
+- **Robust Process Supervision**: Custom JNI process spawner with POSIX process group isolation (`setpgid`) and clean group termination.
+- **Persistent Workspace**: User files saved permanently in `/home/user/projects` inside internal app storage.
+- **Foreground Service Persistence**: Ongoing foreground service with wake lock ensures background compilation tasks are not terminated by Android OOM killer.
+- **Automated CI & Signed Releases**: Unified GitHub Actions pipeline automatically tests and builds signed release APKs.
+
+---
+
+## Architecture Overview
 
 ```
-Android Application
-├── MainActivity (Lifecycle management)
-├── WebView (VS Code Web interface)
-└── Linux Runtime Controller
-    └── PRoot (LinuxDroid with Android patches)
-        └── Ubuntu 26.04 ARM64 Rootfs
-            ├── code-server (VS Code Server)
-            ├── Git, Node.js, Python
-            └── User projects (/home/user/projects)
+┌─────────────────────────────────────────────────────────────┐
+│                    Android Host Layer                       │
+│                                                             │
+│   ┌───────────────────┐        ┌────────────────────────┐   │
+│   │   MainActivity    │◄───────┤   RuntimeController    │   │
+│   │  (WebView Host)   │ State  │  (Singleton Manager)   │   │
+│   └─────────┬─────────┘        └───────────┬────────────┘   │
+│             │ HTTP                         │ Starts / Stops │
+│             │ 127.0.0.1:8080               ▼                │
+│             │                  ┌────────────────────────┐   │
+│             │                  │  LinuxRuntimeService   │   │
+│             │                  │  (Foreground Service)  │   │
+│             │                  └───────────┬────────────┘   │
+│             ▼                              │ Spawns JNI     │
+│   ┌───────────────────┐                    ▼                │
+│   │   VsCodeWebView   │        ┌────────────────────────┐   │
+│   └───────────────────┘        │   NativeSpawn (JNI)    │   │
+│                                └───────────┬────────────┘   │
+└────────────────────────────────────────────┼────────────────┘
+                                             │ fork() / execve()
+┌────────────────────────────────────────────▼────────────────┐
+│                    Linux Userspace Layer                    │
+│                                                             │
+│   ┌─────────────────────────────────────────────────────┐   │
+│   │      LinuxDroid PRoot Engine (libproot.so)          │   │
+│   │   - 16KB ELF page alignment for modern kernels      │   │
+│   │   - Fake root & syscall translation layer           │   │
+│   └──────────────────────────┬──────────────────────────┘   │
+│                              │                              │
+│   ┌──────────────────────────▼──────────────────────────┐   │
+│   │              Ubuntu ARM64 Userspace                 │   │
+│   │  - /bin/bash, Python 3, Git                         │   │
+│   │  - /opt/code-server (v4.96.4 web server)            │   │
+│   │  - /home/user/projects (Workspaces)                 │   │
+│   └─────────────────────────────────────────────────────┘   │
+└─────────────────────────────────────────────────────────────┘
 ```
 
-## Features
+For in-depth architectural details, refer to [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
-- **Full VS Code Experience**: Runs actual code-server inside Linux
-- **Persistent Linux Environment**: Ubuntu 26.04 ARM64 base
-- **Development Tools**: Git, Node.js, npm, Python3 pre-installed
-- **Project Persistence**: All projects stored in Linux filesystem
-- **Terminal Access**: Full Linux terminal inside VS Code
-- **Extension Support**: Install and use VS Code extensions
+---
 
 ## Prerequisites
 
-- Android Studio Arctic Fox or later
-- Android SDK 26+
-- Android NDK 25+
-- JDK 17+
-- Android device with ARM64 architecture (or emulator)
+To build AVSCode locally from source, ensure you have:
 
-## Building
+- **Operating System**: Linux or macOS (x86_64 or Apple Silicon)
+- **JDK**: Java Development Kit 21 (Temurin or OpenJDK recommended)
+- **Android SDK**: API Level 36 (`platform-tools`, `platforms;android-36`, `build-tools;35.0.0`)
+- **Android NDK**: NDK revision `29.0.14206865` (r29)
+- **CMake**: Version 3.22.1 or newer
+- **Git**: With submodule support enabled
 
-### Option 1: Using Build Script
+---
+
+## Building from Source
+
+### 1. Clone Repository & Submodules
 
 ```bash
-export ANDROID_HOME=/path/to/android/sdk
-export ANDROID_NDK_HOME=/path/to/android/ndk
-./build.sh
+git clone --recursive https://github.com/InfidelRahul/AVSCode.git
+cd AVSCode
 ```
 
-### Option 2: Manual Build
+If already cloned without submodules:
+```bash
+git submodule update --init --recursive
+```
+
+### 2. Configure Environment
+
+Set the paths to your Android SDK and NDK:
+```bash
+export ANDROID_HOME=/path/to/android-sdk
+export ANDROID_NDK_HOME=$ANDROID_HOME/ndk/29.0.14206865
+```
+*(Or create `android/local.properties` containing `sdk.dir=/path/to/android-sdk`)*
+
+### 3. Build APK
+
+Using the unified build script:
+
+```bash
+# Build Signed Release APK (default)
+./build.sh release
+
+# Build Debug APK
+./build.sh debug
+```
+
+Or using Gradle directly:
 
 ```bash
 cd android
-./gradlew assembleDebug
+
+# Run unit tests
+./gradlew test
+
+# Assemble Signed Release APK
+./gradlew assembleRelease
+
+# Output APK: android/app/build/outputs/apk/release/app-release.apk
 ```
 
-The APK will be generated at: `android/app/build/outputs/apk/debug/app-debug.apk`
+---
 
-## Installation
+## Installation & Running
 
-1. Transfer the APK to your Android device
-2. Enable "Install from Unknown Sources" in Settings
-3. Install the APK
-4. Open AVscode
-
-## First Launch
-
-On first launch, the application will:
-
-1. Download Ubuntu 26.04 ARM64 rootfs (~50MB)
-2. Extract and install the rootfs
-3. Start the Linux runtime
-4. Install development tools (git, nodejs, python3, etc.)
-5. Download and install code-server
-6. Start code-server
-7. Display VS Code Web in the WebView
-
-**Note**: First launch may take 5-10 minutes depending on network speed.
-
-## Usage
-
-### Creating a Project
-
-1. Open VS Code Terminal (Ctrl+` or View → Terminal)
-2. Navigate to projects directory: `cd /home/user/projects`
-3. Create a new project:
+1. Enable **Install from Unknown Sources** in Android Settings.
+2. Install the generated APK onto your Android device:
    ```bash
-   mkdir my-project
-   cd my-project
-   git init
+   adb install android/app/build/outputs/apk/release/app-release.apk
    ```
+3. Launch **AVSCode**. On first boot:
+   - Downloads and verifies the Ubuntu ARM64 userspace.
+   - Configures guest networking and DNS.
+   - Unpacks and starts VS Code Server.
+   - Loads the VS Code IDE in the WebView.
 
-### Using Extensions
-
-1. Click Extensions icon in Activity Bar
-2. Search and install extensions as normal
-3. Extensions are stored in `/home/user/.local/share/code-server/extensions`
-
-## Technical Details
-
-### Components
-
-| Component | Description |
-|-----------|-------------|
-| RootfsInstaller | Downloads and installs Ubuntu 26.04 ARM64 |
-| PRootRuntime | Manages Linux process lifecycle via PRoot |
-| VsCodeServerManager | Downloads, installs, and manages code-server |
-| VsCodeWebView | Renders VS Code Web interface |
-
-### PRoot Integration
-
-Uses LinuxDroid PRoot with:
-- 16KB ELF page alignment for Android 15
-- W^X bypass for modern Android
-- Multi-ABI support
-- Shared memory emulation
-
-## Troubleshooting
-
-### First Launch Fails
-- Check network connectivity
-- Ensure sufficient storage (2GB+ free)
-- Check logcat: `adb logcat | grep -E "AVscode|PRoot|VsCode"`
-
-### code-server Won't Start
-```bash
-# In VS Code Terminal:
-/opt/code-server/bin/code-server --version
-```
-
-### WebView Shows Blank Screen
-- Wait longer - code-server may still be starting
-- Check server status in logs
-- Try restarting the app
+---
 
 ## Project Structure
 
 ```
-android/
-├── app/           # Main application
-├── core/          # Core utilities
-├── runtime/       # Linux runtime (PRoot + native)
-├── rootfs/        # Rootfs management
-├── vscode/        # VS Code Server manager
-├── web/           # WebView management
-└── diagnostics/   # Diagnostics and logging
+AVSCode/
+├── .github/workflows/
+│   ├── ci.yml                 # Unified CI & Signed Release Build workflow
+│   └── README.md              # CI/CD workflow documentation
+├── android/
+│   ├── app/                   # Android UI, MainActivity, Foreground Service
+│   ├── core/                  # AppPaths, AvsLogger, RuntimeState models
+│   ├── runtime/               # PRoot engine, JNI avscode_spawn, LinuxRuntime
+│   ├── rootfs/                # RootfsInstaller (Ubuntu ARM64 base + DNS/APT)
+│   ├── vscode/                # VsCodeServerManager (code-server v4.96.4)
+│   ├── web/                   # VsCodeWebView (Chromium WebView & keyboard bridge)
+│   └── diagnostics/           # RuntimeDiagnostics & health checks
+├── docs/
+│   └── ARCHITECTURE.md        # In-depth architectural documentation
+├── proot-repo/                # LinuxDroid PRoot Git submodule (arm64-v8a)
+├── build.sh                   # Unified local build script (debug/release)
+└── README.md                  # Project overview
 ```
 
-## License
+---
 
-- PRoot: GPL v2
-- talloc: LGPL v3
-- libandroid-shmem: Apache 2.0
-- code-server: MIT
+## License & Acknowledgments
 
-AVscode provided as-is for educational purposes.
-
-## Acknowledgments
-
-- LinuxDroid team for PRoot
-- Coder team for code-server
-- Microsoft for VS Code
-- Ubuntu team for Ubuntu Base
+- **AVSCode**: Apache License 2.0
+- **PRoot**: GPL v2 ([LinuxDroid](https://github.com/LinuxDroidapp/proot))
+- **code-server**: MIT ([Coder](https://github.com/coder/code-server))
+- **Ubuntu Base**: Canonical Ltd.

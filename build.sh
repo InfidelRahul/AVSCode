@@ -1,105 +1,86 @@
-#!/bin/bash
-# AVscode Build Script
-# This script builds the complete AVscode Android application
+#!/usr/bin/env bash
+# ==============================================================================
+# AVSCode Build Script (VS Code for Android)
+# Builds LinuxDroid PRoot runtime and Android APK (Debug / Release)
+# ==============================================================================
 
-set -e
+set -euo pipefail
 
-echo "========================================"
-echo "AVscode - VS Code for Android Build"
-echo "========================================"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ANDROID_DIR="${SCRIPT_DIR}/android"
+PROOT_REPO="${SCRIPT_DIR}/proot-repo"
 
-# Colors for output
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
-NC='\033[0m' # No Color
+BUILD_TYPE="${1:-release}"
+if [[ "$BUILD_TYPE" != "debug" && "$BUILD_TYPE" != "release" ]]; then
+    echo "Usage: $0 [debug|release]"
+    exit 1
+fi
 
-# Check prerequisites
-check_prerequisites() {
-    echo -e "${YELLOW}Checking prerequisites...${NC}"
-    
-    # Check Android SDK
-    if [ -z "$ANDROID_HOME" ] && [ -z "$ANDROID_SDK_ROOT" ]; then
-        echo -e "${RED}Error: ANDROID_HOME or ANDROID_SDK_ROOT not set${NC}"
-        exit 1
+echo "=========================================="
+echo " Building AVSCode ($BUILD_TYPE)"
+echo "=========================================="
+
+# 1. Check Submodules
+if [ ! -f "${PROOT_REPO}/CMakeLists.txt" ]; then
+    echo "Initializing PRoot submodule..."
+    git submodule update --init --recursive
+fi
+
+# 2. Check Android SDK / NDK Environment
+if [ -z "${ANDROID_HOME:-}" ] && [ -z "${ANDROID_SDK_ROOT:-}" ]; then
+    if [ -f "${ANDROID_DIR}/local.properties" ]; then
+        SDK_PROP=$(grep "^sdk.dir=" "${ANDROID_DIR}/local.properties" | cut -d'=' -f2 | sed 's/\\//g')
+        if [ -n "$SDK_PROP" ] && [ -d "$SDK_PROP" ]; then
+            export ANDROID_HOME="$SDK_PROP"
+            export ANDROID_SDK_ROOT="$SDK_PROP"
+        fi
     fi
-    
-    # Check NDK
-    if [ -z "$ANDROID_NDK_HOME" ] && [ -z "$NDK_HOME" ]; then
-        echo -e "${RED}Error: ANDROID_NDK_HOME or NDK_HOME not set${NC}"
-        exit 1
+fi
+
+if [ -z "${ANDROID_HOME:-}" ]; then
+    echo "ERROR: ANDROID_HOME or ANDROID_SDK_ROOT is not set."
+    echo "Please set ANDROID_HOME or configure local.properties in android/"
+    exit 1
+fi
+
+# Auto-detect NDK if not set
+if [ -z "${ANDROID_NDK_HOME:-}" ]; then
+    if [ -d "${ANDROID_HOME}/ndk" ]; then
+        NDK_LATEST=$(find "${ANDROID_HOME}/ndk" -maxdepth 1 -mindepth 1 -type d | sort -V | tail -n 1)
+        if [ -n "$NDK_LATEST" ]; then
+            export ANDROID_NDK_HOME="$NDK_LATEST"
+            echo "Auto-detected NDK: ${ANDROID_NDK_HOME}"
+        fi
     fi
-    
-    # Check Java
-    if ! command -v java &> /dev/null; then
-        echo -e "${RED}Error: Java not found${NC}"
-        exit 1
+fi
+
+chmod +x "${ANDROID_DIR}/gradlew"
+
+cd "${ANDROID_DIR}"
+
+if [ "$BUILD_TYPE" = "debug" ]; then
+    ./gradlew assembleDebug --no-configuration-cache
+    APK="${ANDROID_DIR}/app/build/outputs/apk/debug/app-debug.apk"
+else
+    # Check if release keystore exists or create a temporary fallback one
+    if [ ! -f "${ANDROID_DIR}/release.keystore" ]; then
+        echo "Generating release keystore for local build..."
+        keytool -genkeypair -v -keystore "${ANDROID_DIR}/release.keystore" \
+            -alias avscode -keyalg RSA -keysize 2048 -validity 10000 \
+            -storepass avscode123 -keypass avscode123 \
+            -dname "CN=AVSCode, OU=Mobile, O=AVSCode, L=City, S=State, C=US"
     fi
-    
-    echo -e "${GREEN}Prerequisites OK${NC}"
-}
+    ./gradlew assembleRelease --no-configuration-cache
+    APK="${ANDROID_DIR}/app/build/outputs/apk/release/app-release.apk"
+fi
 
-# Build native libraries
-build_native() {
-    echo -e "${YELLOW}Building native libraries...${NC}"
-    
-    cd android/runtime/src/main/cpp
-    
-    # Create build directory
-    mkdir -p build
-    cd build
-    
-    # Configure with CMake
-    cmake .. \
-        -DCMAKE_TOOLCHAIN_FILE=$ANDROID_NDK_HOME/build/cmake/android.toolchain.cmake \
-        -DANDROID_ABI=arm64-v8a \
-        -DANDROID_PLATFORM=android-26 \
-        -DCMAKE_BUILD_TYPE=Release
-    
-    # Build
-    cmake --build . --parallel $(nproc)
-    
-    cd ../../../../../..
-    
-    echo -e "${GREEN}Native libraries built successfully${NC}"
-}
-
-# Build Android application
-build_android() {
-    echo -e "${YELLOW}Building Android application...${NC}"
-    
-    cd android
-    
-    # Make gradlew executable
-    chmod +x gradlew
-    
-    # Clean and build
-    ./gradlew clean assembleDebug --no-daemon
-    
-    cd ..
-    
-    echo -e "${GREEN}Android application built successfully${NC}"
-}
-
-# Main build process
-main() {
-    echo ""
-    check_prerequisites
-    echo ""
-    
-    # Note: Native build requires proper NDK setup
-    # For now, we'll skip native build and let Gradle handle it
-    # build_native
-    
-    build_android
-    
-    echo ""
-    echo "========================================"
-    echo -e "${GREEN}Build completed successfully!${NC}"
-    echo "========================================"
-    echo ""
-    echo "APK location: android/app/build/outputs/apk/debug/"
-    echo ""
-}
-
-main "$@"
+if [ -f "$APK" ]; then
+    echo "=========================================="
+    echo " Build Succeeded!"
+    echo " APK: $APK"
+    echo " Size: $(du -h "$APK" | cut -f1)"
+    echo "=========================================="
+else
+    echo "ERROR: Expected APK not found at $APK"
+    exit 1
+fi
