@@ -21,7 +21,7 @@ import java.util.concurrent.atomic.AtomicBoolean
  * CLI tools) and Android host capabilities (browser intents, OAuth callbacks).
  */
 class AuthBridgeServer(
-    private val requestedPort: Int = 0,
+    private val requestedBridgePort: Int = 0,
     private val onAuthRequested: ((requestId: String, authUrl: String, title: String?) -> Unit)? = null
 ) {
     companion object {
@@ -46,29 +46,34 @@ class AuthBridgeServer(
     private val isRunning = AtomicBoolean(false)
     private val sessions = ConcurrentHashMap<String, AuthSession>()
 
-    var activePort: Int = 0
+    var authBridgePort: Int = 0
         private set
+
+    /** Backward-compatible alias for authBridgePort */
+    val activePort: Int get() = authBridgePort
 
     /**
      * Starts the loopback HTTP bridge server.
+     * Binds to dual-stack loopback so both 127.0.0.1, ::1, and localhost work reliably.
      */
     @Synchronized
     fun start(): Int {
         if (isRunning.get() && serverSocket != null && !serverSocket!!.isClosed) {
-            return activePort
+            return authBridgePort
         }
 
-        val socket = ServerSocket(requestedPort, 50, InetAddress.getByName("127.0.0.1"))
+        // Bind dual-stack wildcard or loopback port; non-loopback clients are rejected in listenLoop
+        val socket = ServerSocket(requestedBridgePort)
         serverSocket = socket
-        activePort = socket.localPort
+        authBridgePort = socket.localPort
         isRunning.set(true)
 
         executor.submit {
             listenLoop(socket)
         }
 
-        AvsLogger.i(TAG, "AuthBridgeServer started on 127.0.0.1:$activePort")
-        return activePort
+        AvsLogger.i(TAG, "AuthBridgeServer started on loopback port :$authBridgePort (127.0.0.1 / ::1 / localhost)")
+        return authBridgePort
     }
 
     /**
@@ -124,6 +129,12 @@ class AuthBridgeServer(
         while (isRunning.get() && !socket.isClosed) {
             try {
                 val client = socket.accept()
+                val addr = client.inetAddress
+                if (!addr.isLoopbackAddress && !addr.isAnyLocalAddress) {
+                    AvsLogger.w(TAG, "Rejected non-loopback connection from ${addr.hostAddress}")
+                    try { client.close() } catch (_: Exception) {}
+                    continue
+                }
                 executor.submit {
                     handleConnection(client)
                 }
@@ -175,7 +186,7 @@ class AuthBridgeServer(
 
             when {
                 path == "/health" || path == "/status" -> {
-                    val resp = """{"status":"ok","bridgePort":$activePort,"activeSessions":${sessions.size}}"""
+                    val resp = """{"status":"ok","authBridgePort":$authBridgePort,"bridgePort":$authBridgePort,"activeSessions":${sessions.size}}"""
                     sendResponse(output, 200, "application/json", resp)
                 }
                 path == "/auth/request" && method == "POST" -> {

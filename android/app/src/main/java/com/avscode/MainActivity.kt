@@ -24,6 +24,7 @@ import com.avscode.core.StoragePermissionHelper
 import com.avscode.web.VsCodeWebView
 import com.google.android.material.button.MaterialButton
 import com.google.android.material.floatingactionbutton.FloatingActionButton
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.launch
 
@@ -80,20 +81,23 @@ class MainActivity : AppCompatActivity() {
         runtimeController = RuntimeController.getInstance(this)
         webViewManager = VsCodeWebView(this)
 
-        // Wire up Auth Bridge intent handler
+        // Wire up in-app Auth Bridge handler (pure in-app WebView, NO Chrome/external browser)
         runtimeController.onAuthRequestTriggered = { requestId, authUrl, title ->
             runOnUiThread {
                 try {
-                    val browserIntent = Intent(Intent.ACTION_VIEW, Uri.parse(authUrl)).apply {
-                        flags = Intent.FLAG_ACTIVITY_NEW_TASK
-                    }
-                    startActivity(browserIntent)
-                    val msg = title ?: "Authentication requested: opening browser..."
+                    AvsLogger.i(TAG, "Navigating WebView to auth URL for request $requestId: $authUrl")
+                    val msg = title ?: "Authentication requested..."
                     Toast.makeText(this, msg, Toast.LENGTH_SHORT).show()
+                    webViewManager.loadUrl(authUrl)
                 } catch (e: Exception) {
-                    AvsLogger.w(TAG, "Failed to launch browser for auth request $requestId: ${e.message}")
+                    AvsLogger.w(TAG, "Failed to load auth URL in WebView for request $requestId: ${e.message}")
                 }
             }
+        }
+
+        // Wire up AuthBridge callback interception from WebView
+        webViewManager.onAuthCallbackReceived = { uri ->
+            handleAuthCallbackUri(uri)
         }
 
         webViewManager.onConnectionError = { err ->
@@ -109,6 +113,11 @@ class MainActivity : AppCompatActivity() {
                     // Switch back to editor
                     terminalContainer.visibility = View.GONE
                     fabShowTerminal.visibility = View.VISIBLE
+                    return
+                }
+                if (webViewManager.isInAuthFlow()) {
+                    webViewManager.cancelAuthAndRestoreEditor()
+                    Toast.makeText(this@MainActivity, "Authentication cancelled", Toast.LENGTH_SHORT).show()
                     return
                 }
                 if (!webViewManager.handleBackPress()) {
@@ -138,16 +147,45 @@ class MainActivity : AppCompatActivity() {
         handleIncomingAuthIntent(intent)
     }
 
+    private fun handleAuthCallbackUri(data: Uri): Boolean {
+        val requestId = data.getQueryParameter("requestId") ?: data.getQueryParameter("state")
+        val code = data.getQueryParameter("code")
+        val token = data.getQueryParameter("token")
+        AvsLogger.i(TAG, "Processing auth callback: requestId=$requestId, hasCode=${code != null}")
+
+        if (requestId != null) {
+            runtimeController.authBridgeServer.completeSession(requestId, code, token)
+        }
+
+        // Notify loopback AuthBridgeServer in background
+        lifecycleScope.launch(Dispatchers.IO) {
+            try {
+                val bridgePort = runtimeController.authBridgePort
+                if (bridgePort > 0) {
+                    val query = data.query.orEmpty()
+                    val bridgeUrl = java.net.URL("http://127.0.0.1:$bridgePort/auth/callback?$query")
+                    val conn = bridgeUrl.openConnection() as java.net.HttpURLConnection
+                    conn.connectTimeout = 3000
+                    conn.readTimeout = 3000
+                    conn.responseCode
+                    conn.disconnect()
+                }
+            } catch (e: Exception) {
+                AvsLogger.d(TAG, "Background notify to AuthBridgeServer: ${e.message}")
+            }
+        }
+
+        runOnUiThread {
+            Toast.makeText(this, "AVSCode: Authentication complete!", Toast.LENGTH_SHORT).show()
+        }
+        return true
+    }
+
     private fun handleIncomingAuthIntent(intent: Intent?) {
         val data = intent?.data ?: return
         if (data.scheme == "avscode" || data.path?.contains("callback") == true) {
-            val requestId = data.getQueryParameter("requestId") ?: data.getQueryParameter("state")
-            val code = data.getQueryParameter("code")
-            val token = data.getQueryParameter("token")
-            if (requestId != null) {
-                runtimeController.authBridgeServer.completeSession(requestId, code, token)
-                Toast.makeText(this, "AVSCode: Authentication complete!", Toast.LENGTH_SHORT).show()
-            }
+            handleAuthCallbackUri(data)
+            webViewManager.restoreEditor()
         }
     }
 
@@ -386,6 +424,10 @@ class MainActivity : AppCompatActivity() {
                         statusHeadline.text = "VS Code is ready at ${state.url}"
                         progressBar.visibility = View.GONE
                         btnHideTerminal.visibility = View.VISIBLE
+
+                        val sPort = runtimeController.serverPort ?: 0
+                        val bPort = runtimeController.authBridgePort
+                        webViewManager.setEndpoints(sPort, bPort, state.url)
 
                         attachAndLoadWebView(state.url)
                         // Transition to editor

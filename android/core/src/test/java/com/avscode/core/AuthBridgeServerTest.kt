@@ -29,11 +29,13 @@ class AuthBridgeServerTest {
     fun testServerLifecycle() {
         val s = server ?: return
         assertFalse(s.isAlive())
+        assertEquals(0, s.authBridgePort)
         assertEquals(0, s.activePort)
 
         val port = s.start()
         assertTrue(port > 0)
         assertTrue(s.isAlive())
+        assertEquals(port, s.authBridgePort)
         assertEquals(port, s.activePort)
 
         // Repeat start returns same active port
@@ -49,17 +51,29 @@ class AuthBridgeServerTest {
         val s = server ?: return
         val port = s.start()
 
-        val url = URL("http://127.0.0.1:$port/health")
-        val conn = url.openConnection() as HttpURLConnection
-        conn.connectTimeout = 3000
-        conn.readTimeout = 3000
+        // Test reachable via 127.0.0.1
+        val urlIpv4 = URL("http://127.0.0.1:$port/health")
+        val connIpv4 = urlIpv4.openConnection() as HttpURLConnection
+        connIpv4.connectTimeout = 3000
+        connIpv4.readTimeout = 3000
 
-        assertEquals(200, conn.responseCode)
-        assertTrue(conn.contentType.startsWith("application/json"))
-        val body = conn.inputStream.bufferedReader().use { it.readText() }
-        assertTrue(body.contains("\"status\":\"ok\""))
-        assertTrue(body.contains("\"bridgePort\":$port"))
-        conn.disconnect()
+        assertEquals(200, connIpv4.responseCode)
+        assertTrue(connIpv4.contentType.startsWith("application/json"))
+        val bodyIpv4 = connIpv4.inputStream.bufferedReader().use { it.readText() }
+        assertTrue(bodyIpv4.contains("\"status\":\"ok\""))
+        assertTrue(bodyIpv4.contains("\"authBridgePort\":$port"))
+        assertTrue(bodyIpv4.contains("\"bridgePort\":$port"))
+        connIpv4.disconnect()
+
+        // Test reachable via localhost (resolves to 127.0.0.1 or ::1)
+        val urlLocalhost = URL("http://localhost:$port/health")
+        val connLocalhost = urlLocalhost.openConnection() as HttpURLConnection
+        connLocalhost.connectTimeout = 3000
+        connLocalhost.readTimeout = 3000
+        assertEquals(200, connLocalhost.responseCode)
+        val bodyLocalhost = connLocalhost.inputStream.bufferedReader().use { it.readText() }
+        assertTrue(bodyLocalhost.contains("\"status\":\"ok\""))
+        connLocalhost.disconnect()
     }
 
     @Test

@@ -1,6 +1,7 @@
 package com.avscode
 
 import android.content.Context
+import java.io.File
 import com.avscode.core.*
 import com.avscode.rootfs.RootfsInstaller
 import com.avscode.runtime.LinuxRuntimeService
@@ -56,6 +57,9 @@ class RuntimeController private constructor(private val context: Context) {
         AvsLogger.i(TAG, "Auth request received via bridge: requestId=$requestId authUrl=$authUrl")
         onAuthRequestTriggered?.invoke(requestId, authUrl, title)
     }
+
+    val authBridgePort: Int get() = authBridgeServer.authBridgePort
+    val serverPort: Int? get() = vscodeCli.getServerPort()
 
     private val _appState = MutableStateFlow<AppState>(AppState.NeedsStorageAccess)
     val appState: StateFlow<AppState> = _appState.asStateFlow()
@@ -206,15 +210,16 @@ class RuntimeController private constructor(private val context: Context) {
 
             // Step 6: Start Android <-> Linux Authentication Bridge
             _appState.value = AppState.StartingAuthBridge("Starting Auth Bridge...")
-            val bridgePort = authBridgeServer.start()
-            emitLog("[AuthBridge] Android <-> Linux Authentication Bridge active on 127.0.0.1:$bridgePort")
-            setupGuestAuthHelper(bridgePort)
+            val authBridgePort = authBridgeServer.start()
+            emitLog("[AuthBridge] Android <-> Linux Authentication Bridge active on 127.0.0.1:$authBridgePort")
+            setupGuestAuthHelper(authBridgePort)
 
             // Step 7: Start Local Microsoft VS Code Server (code serve-web) inside Linux userspace
             _appState.value = AppState.StartingVsCodeServer("Starting local VS Code Server...")
             emitLog("[VS Code] Starting local VS Code Server (code serve-web) inside Linux userspace...")
             try {
                 val serverUrl = vscodeCli.startServer(
+                    serverPort = null, // Dynamically allocate ephemeral port
                     onLog = { line -> emitLog(line) },
                     onServerReady = { url ->
                         emitLog("[VS Code] Local server reachable: $url")
@@ -234,13 +239,14 @@ class RuntimeController private constructor(private val context: Context) {
     }
 
     /**
-     * Injects the guest authentication helper script into /usr/local/bin/avscode-auth.
+     * Injects the guest authentication helper script into /usr/local/bin/avscode-auth
+     * and installs /usr/local/bin/xdg-open to route guest URLs to the AuthBridge.
      */
-    private suspend fun setupGuestAuthHelper(bridgePort: Int) {
+    private suspend fun setupGuestAuthHelper(authBridgePort: Int) {
         try {
             val scriptContent = """
                 #!/bin/bash
-                PORT="${'$'}{AVSCODE_AUTH_BRIDGE_PORT:-$bridgePort}"
+                PORT="${'$'}{AVSCODE_AUTH_BRIDGE_PORT:-$authBridgePort}"
                 ENDPOINT="http://127.0.0.1:${'$'}PORT"
                 case "${'$'}1" in
                     open)
@@ -256,8 +262,12 @@ class RuntimeController private constructor(private val context: Context) {
                         curl -s "${'$'}ENDPOINT/health"
                         ;;
                     *)
-                        echo "AVSCode Authentication Bridge Helper"
-                        echo "Usage: avscode-auth {open <url> [title] | poll <requestId> | health}"
+                        if [[ "${'$'}1" == http* ]]; then
+                            curl -s -X POST -H "Content-Type: application/json" -d "{\"authUrl\":\"${'$'}1\",\"title\":\"${'$'}2\"}" "${'$'}ENDPOINT/auth/request"
+                        else
+                            echo "AVSCode Authentication Bridge Helper"
+                            echo "Usage: avscode-auth {open <url> [title] | poll <requestId> | health}"
+                        fi
                         ;;
                 esac
             """.trimIndent()
@@ -267,6 +277,13 @@ class RuntimeController private constructor(private val context: Context) {
             guestScriptFile.writeText(scriptContent)
             guestScriptFile.setExecutable(true, false)
             linuxRuntime.execute("chmod 755 ${paths.guestAuthHelperScript} 2>/dev/null || true")
+
+            // Deploy /usr/local/bin/xdg-open wrapper pointing to avscode-auth
+            val xdgOpenHostFile = File(paths.rootfsDir, "usr/local/bin/xdg-open")
+            xdgOpenHostFile.parentFile?.mkdirs()
+            xdgOpenHostFile.writeText("#!/bin/bash\nexec /usr/local/bin/avscode-auth \"$@\"\n")
+            xdgOpenHostFile.setExecutable(true, false)
+            linuxRuntime.execute("chmod 755 /usr/local/bin/xdg-open 2>/dev/null || true")
         } catch (e: Exception) {
             AvsLogger.w(TAG, "Failed to setup guest auth helper: ${e.message}")
         }

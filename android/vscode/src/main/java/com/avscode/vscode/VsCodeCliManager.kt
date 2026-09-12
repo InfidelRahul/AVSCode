@@ -61,14 +61,14 @@ class VsCodeCliManager(
          * Builds the command to execute `code serve-web` locally inside PRoot userspace.
          */
         fun buildServerCommand(
-            port: Int,
+            serverPort: Int,
             host: String = DEFAULT_SERVER_HOST,
             cliBinPath: String = GUEST_BIN_PATH,
             cliDataDir: String = GUEST_DATA_DIR
         ): String {
             return "$cliBinPath serve-web " +
                     "--host $host " +
-                    "--port $port " +
+                    "--port $serverPort " +
                     "--without-connection-token " +
                     "--accept-server-license-terms " +
                     "--cli-data-dir $cliDataDir " +
@@ -78,9 +78,9 @@ class VsCodeCliManager(
         /**
          * Checks if the local loopback server responds to HTTP requests.
          */
-        fun checkHttpReachable(port: Int, host: String = DEFAULT_SERVER_HOST): Boolean {
+        fun checkHttpReachable(serverPort: Int, host: String = DEFAULT_SERVER_HOST): Boolean {
             return try {
-                val url = URL("http://$host:$port")
+                val url = URL("http://$host:$serverPort")
                 val conn = url.openConnection() as HttpURLConnection
                 conn.connectTimeout = 800
                 conn.readTimeout = 800
@@ -261,12 +261,12 @@ class VsCodeCliManager(
      * - Emits the local editor URL on success.
      * - On failure, terminates the spawned process and clears state.
      *
-     * @param port Optional specific port to bind to (defaults to dynamic port)
+     * @param serverPort Optional specific port to bind to (defaults to dynamic port)
      * @param onLog Real-time output stream callback
      * @param onServerReady Invoked when local HTTP server is reachable
      */
     suspend fun startServer(
-        port: Int? = null,
+        serverPort: Int? = null,
         onLog: ((String) -> Unit)? = null,
         onServerReady: ((url: String) -> Unit)? = null
     ): Result<String> = withContext(Dispatchers.IO) {
@@ -284,8 +284,8 @@ class VsCodeCliManager(
             // Cleanup stale processes before starting
             cleanStaleProcesses()
 
-            val selectedPort = port ?: findAvailablePort()
-            serverPort = selectedPort
+            val selectedPort = serverPort ?: findAvailablePort()
+            this@VsCodeCliManager.serverPort = selectedPort
 
             AvsLogger.i(TAG, "Starting local VS Code Server on 127.0.0.1:$selectedPort")
             onLog?.invoke("[VS Code] Starting local server on 127.0.0.1:$selectedPort...")
@@ -337,7 +337,7 @@ class VsCodeCliManager(
      * Polls the server endpoint until it responds to HTTP requests or fails fast if process terminates.
      */
     private suspend fun waitForServerReady(
-        port: Int,
+        serverPort: Int,
         logFile: File,
         onLog: ((String) -> Unit)?
     ): String {
@@ -368,15 +368,15 @@ class VsCodeCliManager(
             }
 
             // Probe HTTP endpoint
-            if (checkHttpReachable(port)) {
-                return "http://$DEFAULT_SERVER_HOST:$port/?folder=$GUEST_PROJECTS_DIR"
+            if (checkHttpReachable(serverPort)) {
+                return "http://$DEFAULT_SERVER_HOST:$serverPort/?folder=$GUEST_PROJECTS_DIR"
             }
 
             delay(PROBE_INTERVAL_MS)
         }
 
         val logs = if (logFile.exists()) logFile.readText().takeLast(2000) else "No logs"
-        throw RuntimeException("Timed out waiting for local VS Code Server on port $port after ${STARTUP_TIMEOUT_MS / 1000}s:\n$logs")
+        throw RuntimeException("Timed out waiting for local VS Code Server on port $serverPort after ${STARTUP_TIMEOUT_MS / 1000}s:\n$logs")
     }
 
     private suspend fun cleanStaleProcesses() {
