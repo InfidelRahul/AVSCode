@@ -100,13 +100,25 @@ class LinuxRuntimeService : Service() {
         scope.launch {
             controller.appState.collectLatest { state ->
                 val text = when (state) {
+                    is AppState.NeedsStorageAccess -> "Storage access required"
                     is AppState.NotInstalled -> "Rootfs not installed"
-                    is AppState.InstallingRootfs -> "Installing rootfs: ${(state.progress * 100).toInt()}%"
+                    is AppState.DownloadingRootfs -> "Downloading rootfs: ${(state.progress * 100).toInt()}%"
+                    is AppState.ExtractingRootfs -> "Extracting rootfs: ${(state.progress * 100).toInt()}%"
+                    is AppState.RootfsReady -> "Ubuntu rootfs ready"
                     is AppState.StartingLinux -> "Starting Linux userspace..."
-                    is AppState.Bootstrapping -> state.status
+                    is AppState.VerifyingLinux -> "Verifying Linux guest userspace..."
+                    is AppState.LinuxReady -> "Linux guest userspace active"
+                    is AppState.InstallingPackages -> state.status
+                    is AppState.InstallingVsCode -> "Installing VS Code: ${(state.progress * 100).toInt()}%"
                     is AppState.StartingVsCode -> "Starting VS Code Server..."
                     is AppState.Ready -> "VS Code Server active at ${state.url}"
                     is AppState.Stopping -> "Stopping Linux userspace..."
+                    is AppState.RootfsFailed -> "Rootfs error: ${state.message}"
+                    is AppState.LinuxFailed -> "Linux error: ${state.message}"
+                    is AppState.PackageInstallFailed -> "Package error: ${state.message}"
+                    is AppState.VsCodeFailed -> "VS Code error: ${state.message}"
+                    is AppState.InstallingRootfs -> "Installing rootfs: ${(state.progress * 100).toInt()}%"
+                    is AppState.Bootstrapping -> state.status
                     is AppState.Failed -> "Linux runtime error: ${state.message}"
                 }
                 updateNotification(text)

@@ -19,19 +19,40 @@ enum class RuntimeState {
 
 /**
  * High-level application state observed by UI.
+ * Reflects the exact 12-state runtime pipeline:
+ * NEEDS_STORAGE_ACCESS -> DOWNLOADING_ROOTFS -> EXTRACTING_ROOTFS -> ROOTFS_READY ->
+ * STARTING_LINUX -> VERIFYING_LINUX -> LINUX_READY -> INSTALLING_PACKAGES ->
+ * INSTALLING_VSCODE -> STARTING_VSCODE -> READY
  */
 sealed class AppState {
-    object NotInstalled : AppState()
-    data class InstallingRootfs(val progress: Float, val status: String) : AppState()
+    object NeedsStorageAccess : AppState()
+    data class DownloadingRootfs(val progress: Float, val status: String) : AppState()
+    data class ExtractingRootfs(val progress: Float, val status: String) : AppState()
+    object RootfsReady : AppState()
     object StartingLinux : AppState()
-    data class Bootstrapping(val status: String) : AppState()
+    object VerifyingLinux : AppState()
+    object LinuxReady : AppState()
+    data class InstallingPackages(val status: String) : AppState()
+    data class InstallingVsCode(val progress: Float, val status: String) : AppState()
     object StartingVsCode : AppState()
     data class Ready(val url: String) : AppState()
     object Stopping : AppState()
+
+    // Specific stage failures
+    data class RootfsFailed(val message: String, val throwable: Throwable? = null) : AppState()
+    data class LinuxFailed(val message: String, val throwable: Throwable? = null) : AppState()
+    data class PackageInstallFailed(val message: String, val throwable: Throwable? = null) : AppState()
+    data class VsCodeFailed(val message: String, val throwable: Throwable? = null) : AppState()
+
+    // Backwards compatibility aliases
+    object NotInstalled : AppState()
+    data class InstallingRootfs(val progress: Float, val status: String) : AppState()
+    data class Bootstrapping(val status: String) : AppState()
     data class Failed(val message: String, val throwable: Throwable? = null) : AppState()
 
     val isReady: Boolean get() = this is Ready
-    val isFailed: Boolean get() = this is Failed
+    val isFailed: Boolean get() = this is Failed || this is RootfsFailed || this is LinuxFailed || this is PackageInstallFailed || this is VsCodeFailed
+    val canAccessCli: Boolean get() = this is LinuxReady || this is InstallingPackages || this is InstallingVsCode || this is StartingVsCode || this is Ready || this is VsCodeFailed
 }
 
 /**
@@ -69,7 +90,7 @@ sealed class Result<out T> {
         is Failure -> this
     }
     
-    fun exceptionOrNull(message: String): String? = when (this) {
+    fun exceptionOrNull(message: String?): String? = when (this) {
         is Success -> null
         is Failure -> message ?: error.message ?: error.javaClass.simpleName
     }

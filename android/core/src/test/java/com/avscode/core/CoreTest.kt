@@ -37,14 +37,32 @@ class CoreTest {
         val notInstalled: AppState = AppState.NotInstalled
         assertFalse(notInstalled.isReady)
         assertFalse(notInstalled.isFailed)
+        assertFalse(notInstalled.canAccessCli)
+
+        val needsStorage: AppState = AppState.NeedsStorageAccess
+        assertFalse(needsStorage.isReady)
+        assertFalse(needsStorage.isFailed)
+        assertFalse(needsStorage.canAccessCli)
+
+        val linuxReady: AppState = AppState.LinuxReady
+        assertFalse(linuxReady.isReady)
+        assertFalse(linuxReady.isFailed)
+        assertTrue(linuxReady.canAccessCli)
 
         val ready: AppState = AppState.Ready("http://127.0.0.1:8080")
         assertTrue(ready.isReady)
+        assertFalse(ready.isFailed)
+        assertTrue(ready.canAccessCli)
         assertEquals("http://127.0.0.1:8080", (ready as AppState.Ready).url)
 
         val failed: AppState = AppState.Failed("Disk error")
         assertTrue(failed.isFailed)
         assertEquals("Disk error", (failed as AppState.Failed).message)
+
+        val vscodeFailed: AppState = AppState.VsCodeFailed("Server crash")
+        assertTrue(vscodeFailed.isFailed)
+        assertTrue(vscodeFailed.canAccessCli) // CLI remains accessible on VS Code failure!
+        assertEquals("Server crash", (vscodeFailed as AppState.VsCodeFailed).message)
     }
 
     @Test

@@ -18,8 +18,11 @@ import java.net.URL
 /**
  * VS Code Server (code-server) manager.
  *
- * Handles installation, bootstrap of development environment, server lifecycle,
- * and readiness detection.
+ * Implements strict host/guest execution boundaries:
+ * - Archive download is performed on the Android host.
+ * - Archive extraction and execution are performed strictly inside Linux userspace.
+ * - Guest bootstrap is performed via `/usr/local/lib/avscode/bootstrap.sh`.
+ * - Server process lifecycle is supervised with HTTP readiness checks.
  */
 class VsCodeServerManager(
     private val context: Context,
@@ -57,7 +60,44 @@ class VsCodeServerManager(
     }
 
     /**
+     * Executes the guest-side bootstrap script /usr/local/lib/avscode/bootstrap.sh inside PRoot.
+     * Skips immediately if already bootstrapped.
+     */
+    suspend fun ensureBootstrap(onOutput: ((String) -> Unit)? = null): Result<Unit> = withContext(Dispatchers.IO) {
+        runCatchingResult {
+            val marker = paths.hostBootstrapMarker
+            if (marker.exists()) {
+                AvsLogger.d(TAG, "Bootstrap already completed, skipping")
+                onOutput?.invoke("[Bootstrap] Linux environment already bootstrapped.")
+                return@runCatchingResult Unit
+            }
+
+            AvsLogger.i(TAG, "Running guest bootstrap script: ${paths.guestBootstrapScript}")
+            onOutput?.invoke("[Bootstrap] Running guest bootstrap script (/usr/local/lib/avscode/bootstrap.sh)...")
+
+            val exitCode = linuxRuntime.executeStreaming(paths.guestBootstrapScript) { line ->
+                onOutput?.invoke(line)
+            }.getOrThrow()
+
+            if (exitCode != 0) {
+                throw RuntimeException("Guest bootstrap script failed with exit code $exitCode")
+            }
+
+            // Verify marker
+            if (!marker.exists()) {
+                marker.parentFile?.mkdirs()
+                marker.createNewFile()
+            }
+
+            AvsLogger.i(TAG, "Linux bootstrap completed successfully")
+            onOutput?.invoke("[Bootstrap] Linux bootstrap complete.")
+            Unit
+        }
+    }
+
+    /**
      * Installs code-server into guest /opt/code-server.
+     * Download is an Android host operation; extraction occurs strictly inside the Linux guest.
      */
     suspend fun install(progressCallback: ((Float, String) -> Unit)? = null): Result<Unit> = withContext(Dispatchers.IO) {
         AvsLogger.i(TAG, "Starting code-server installation")
@@ -69,7 +109,7 @@ class VsCodeServerManager(
                 return@runCatchingResult Unit
             }
 
-            // Step 1: Download code-server tarball
+            // Step 1: Download code-server tarball on Android host
             val downloadArchive = File(paths.cacheDir, "code-server-$SERVER_VERSION-linux-arm64.tar.gz")
             if (!downloadArchive.exists() || downloadArchive.length() < 50 * 1024 * 1024) {
                 progressCallback?.invoke(0.1f, "Downloading VS Code Server (code-server v$SERVER_VERSION)...")
@@ -78,37 +118,44 @@ class VsCodeServerManager(
                 }
             }
 
-            // Step 2: Extract directly to /opt/code-server inside rootfs
-            progressCallback?.invoke(0.6f, "Extracting VS Code Server...")
-            val hostInstallDir = File(paths.rootfsDir, "opt/code-server")
-            hostInstallDir.mkdirs()
-
-            // Copy archive into rootfs /tmp for guest extraction
-            val guestTmpArchive = File(paths.rootfsDir, "tmp/code-server.tar.gz")
+            // Step 2: Copy archive to guest /tmp for extraction inside guest
+            progressCallback?.invoke(0.55f, "Staging archive in guest /tmp...")
+            val guestTmpDir = paths.hostGuestTmpDir
+            if (!guestTmpDir.exists()) {
+                guestTmpDir.mkdirs()
+            }
+            val guestTmpArchive = File(guestTmpDir, "code-server.tar.gz")
             downloadArchive.copyTo(guestTmpArchive, overwrite = true)
 
-            val extractCmd = "mkdir -p $GUEST_INSTALL_DIR && tar -xzf /tmp/code-server.tar.gz -C $GUEST_INSTALL_DIR --strip-components=1 && rm -f /tmp/code-server.tar.gz"
-            val extractResult = linuxRuntime.execute(extractCmd)
-            if (extractResult.isFailure) {
-                throw RuntimeException("Extraction of code-server failed: ${extractResult.exceptionOrNull()?.message}")
+            // Step 3: Extract inside Linux userspace using Ubuntu guest tar
+            progressCallback?.invoke(0.65f, "Extracting VS Code Server inside Linux userspace...")
+            val extractCmd = "mkdir -p $GUEST_INSTALL_DIR && tar -xzf /tmp/code-server.tar.gz -C $GUEST_INSTALL_DIR --strip-components=1 && rm -f /tmp/code-server.tar.gz && chmod +x $GUEST_BIN_PATH"
+            val extractExit = linuxRuntime.executeStreaming(extractCmd) { line ->
+                progressCallback?.invoke(0.75f, line)
+            }.getOrThrow()
+
+            if (extractExit != 0) {
+                throw RuntimeException("Extraction of code-server failed inside guest with code $extractExit")
             }
 
-            // Ensure permissions
-            linuxRuntime.execute("chmod +x $GUEST_BIN_PATH")
-
-            // Symlink bundled node & npm so they are globally available in Linux
-            linuxRuntime.execute("mkdir -p /usr/local/bin")
-            linuxRuntime.execute("ln -sf $GUEST_INSTALL_DIR/lib/node /usr/local/bin/node")
-            linuxRuntime.execute("ln -sf $GUEST_INSTALL_DIR/lib/node /usr/bin/node 2>/dev/null || true")
-
-            // Create projects & data directories
+            // Step 4: Symlink bundled node & npm so they are globally accessible in guest
+            progressCallback?.invoke(0.85f, "Configuring Node runtime symlinks...")
+            linuxRuntime.execute("mkdir -p /usr/local/bin && ln -sf $GUEST_INSTALL_DIR/lib/node /usr/local/bin/node")
             linuxRuntime.execute("mkdir -p $GUEST_PROJECTS_DIR $GUEST_DATA_DIR")
 
-            // Cleanup downloaded archive from cache
+            // Step 5: Validate code-server installation
+            progressCallback?.invoke(0.95f, "Validating VS Code Server installation...")
+            val verifyResult = linuxRuntime.execute("$GUEST_BIN_PATH --version")
+            if (verifyResult.isFailure) {
+                throw RuntimeException("code-server validation failed: ${verifyResult.exceptionOrNull()?.message}")
+            }
+            AvsLogger.i(TAG, "code-server validated: ${verifyResult.getOrNull()?.trim()}")
+
+            // Step 6: Cleanup downloaded archive from host cache
             if (downloadArchive.exists()) downloadArchive.delete()
             if (guestTmpArchive.exists()) guestTmpArchive.delete()
 
-            progressCallback?.invoke(1.0f, "VS Code Server installed")
+            progressCallback?.invoke(1.0f, "VS Code Server installed successfully")
             AvsLogger.i(TAG, "code-server installation completed successfully")
         }
     }
@@ -146,65 +193,27 @@ class VsCodeServerManager(
     }
 
     /**
-     * Ensures initial Linux environment tools are bootstrapped (Phase 5).
-     * Skips immediately if already bootstrapped.
-     */
-    suspend fun ensureBootstrap(onStatus: ((String) -> Unit)? = null): Result<Unit> = withContext(Dispatchers.IO) {
-        runCatchingResult {
-            val marker = paths.hostBootstrapMarker
-            if (marker.exists()) {
-                AvsLogger.d(TAG, "Bootstrap already completed, skipping")
-                return@runCatchingResult Unit
-            }
-
-            AvsLogger.i(TAG, "Performing one-time Linux bootstrap...")
-            onStatus?.invoke("Configuring Linux development environment...")
-
-            // Make sure projects directory exists
-            linuxRuntime.execute("mkdir -p /home/user/projects /home/user/.local/share")
-
-            // Install essential dev tools via apt
-            onStatus?.invoke("Updating Linux packages (apt-get update)...")
-            linuxRuntime.execute("export DEBIAN_FRONTEND=noninteractive && apt-get update -qq")
-
-            onStatus?.invoke("Installing core development tools (git, python3, ca-certificates)...")
-            val installCmd = "export DEBIAN_FRONTEND=noninteractive && apt-get install -y --no-install-recommends ca-certificates curl wget git python3 python3-pip"
-            val aptResult = linuxRuntime.execute(installCmd)
-            if (aptResult.isFailure) {
-                AvsLogger.w(TAG, "apt install finished with warnings: ${aptResult.exceptionOrNull()?.message}")
-            }
-
-            // Mark bootstrap as complete
-            marker.parentFile?.mkdirs()
-            marker.createNewFile()
-            AvsLogger.i(TAG, "Linux bootstrap completed successfully")
-        }
-    }
-
-    /**
      * Starts VS Code Server inside PRoot and waits until HTTP endpoint is ready.
      */
-    suspend fun start(workspacePath: String = GUEST_PROJECTS_DIR): Result<Unit> = withContext(Dispatchers.IO) {
+    suspend fun start(workspacePath: String = GUEST_PROJECTS_DIR, onLog: ((String) -> Unit)? = null): Result<Unit> = withContext(Dispatchers.IO) {
         AvsLogger.i(TAG, "Starting VS Code Server on port $SERVER_PORT")
 
         runCatchingResult {
-            // Check if already running and responding
             if (isResponding()) {
                 AvsLogger.i(TAG, "VS Code Server already running and responding on port $SERVER_PORT")
+                onLog?.invoke("[VS Code] Server already active on port $SERVER_PORT")
                 return@runCatchingResult Unit
             }
 
             if (!isInstalled()) {
-                install().getOrThrow()
+                install { _, status -> onLog?.invoke(status) }.getOrThrow()
             }
 
-            // Ensure workspace directory exists
             linuxRuntime.execute("mkdir -p $workspacePath $GUEST_DATA_DIR")
 
             val logFile = paths.serverLogFile
             logFile.parentFile?.mkdirs()
 
-            // Construct server start command
             val guestCmd = buildString {
                 append(GUEST_BIN_PATH)
                 append(" --bind-addr 127.0.0.1:$SERVER_PORT")
@@ -228,10 +237,12 @@ class VsCodeServerManager(
 
             serverPid = spawnResult[0]
             AvsLogger.i(TAG, "code-server spawned with PID $serverPid, waiting for HTTP readiness...")
+            onLog?.invoke("[VS Code] Process spawned (PID $serverPid), awaiting HTTP readiness...")
 
-            // Wait for HTTP endpoint to become responsive
-            waitForServerReady()
+            waitForServerReady(onLog)
             AvsLogger.i(TAG, "VS Code Server is ready at ${getServerUrl()}")
+            onLog?.invoke("[VS Code] Server ready at ${getServerUrl()}")
+            Unit
         }
     }
 
@@ -254,14 +265,8 @@ class VsCodeServerManager(
         }
     }
 
-    /**
-     * Get the local HTTP URL to access VS Code Web.
-     */
     fun getServerUrl(): String = "http://127.0.0.1:$SERVER_PORT"
 
-    /**
-     * Check if the HTTP server is currently responding on 127.0.0.1:SERVER_PORT.
-     */
     fun isResponding(): Boolean {
         return try {
             val url = URL("http://127.0.0.1:$SERVER_PORT/")
@@ -276,10 +281,7 @@ class VsCodeServerManager(
         }
     }
 
-    /**
-     * Poll until the server responds or timeout expires.
-     */
-    private suspend fun waitForServerReady() {
+    private suspend fun waitForServerReady(onLog: ((String) -> Unit)? = null) {
         val start = System.currentTimeMillis()
         while (System.currentTimeMillis() - start < STARTUP_TIMEOUT_MS) {
             if (isResponding()) {
@@ -287,7 +289,6 @@ class VsCodeServerManager(
                 return
             }
 
-            // Check if process crashed
             serverPid?.let { pid ->
                 val status = NativeSpawn.waitFor(pid, true)
                 if (status != -2) {
@@ -304,12 +305,9 @@ class VsCodeServerManager(
     }
 
     suspend fun getStatus(): VsCodeServerStatus = withContext(Dispatchers.IO) {
-        val installed = isInstalled()
-        val running = isResponding()
-
         VsCodeServerStatus(
-            isInstalled = installed,
-            isRunning = running,
+            isInstalled = isInstalled(),
+            isRunning = isResponding(),
             port = SERVER_PORT,
             url = getServerUrl()
         )

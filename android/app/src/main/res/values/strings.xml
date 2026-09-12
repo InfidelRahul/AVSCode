@@ -17,4 +17,9 @@
     <string name="downloading_rootfs">Downloading Ubuntu rootfs...</string>
     <string name="extracting_rootfs">Extracting rootfs...</string>
     <string name="configuring_environment">Configuring development environment...</string>
+    <string name="storage_access_title">Storage Access Required</string>
+    <string name="storage_access_desc">AVSCode requires storage access to download and maintain the Ubuntu Linux userspace, install developer toolchains, and store your coding workspace files.</string>
+    <string name="grant_storage_access">Grant Storage Access &amp; Continue</string>
+    <string name="toggle_terminal">Toggle Terminal</string>
+    <string name="run_command">Run</string>
 </resources>

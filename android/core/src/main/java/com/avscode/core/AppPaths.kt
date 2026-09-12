@@ -42,8 +42,16 @@ class AppPaths(private val context: Context) {
     val serverLogFile: File get() = File(hostCodeServerDataDir, "code-server.log")
     val runtimeLogFile: File get() = File(cacheDir, "linux-runtime.log")
 
+    // Bootstrap script inside guest rootfs
+    val guestBootstrapScript: String = "/usr/local/lib/avscode/bootstrap.sh"
+    val hostBootstrapScript: File get() = File(rootfsDir, "usr/local/lib/avscode/bootstrap.sh")
+
     // Bootstrap marker inside guest rootfs
-    val hostBootstrapMarker: File get() = File(rootfsDir, "var/lib/avscode-bootstrapped")
+    val guestBootstrapMarker: String = "/var/lib/avscode/bootstrapped"
+    val hostBootstrapMarker: File get() = File(rootfsDir, "var/lib/avscode/bootstrapped")
+
+    // Guest /tmp directory inside the rootfs
+    val hostGuestTmpDir: File get() = File(rootfsDir, "tmp")
 
     companion object {
         @Volatile

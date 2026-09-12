@@ -1,24 +1,33 @@
 package com.avscode
 
+import android.content.Intent
+import android.net.Uri
+import android.os.Build
 import android.os.Bundle
+import android.provider.Settings
 import android.view.KeyEvent
 import android.view.View
-import android.widget.FrameLayout
-import android.widget.LinearLayout
-import android.widget.ProgressBar
-import android.widget.TextView
+import android.view.inputmethod.EditorInfo
+import android.widget.*
 import androidx.appcompat.app.AppCompatActivity
 import androidx.lifecycle.lifecycleScope
 import com.avscode.core.AppState
 import com.avscode.core.AvsLogger
+import com.avscode.core.StoragePermissionHelper
 import com.avscode.web.VsCodeWebView
 import com.google.android.material.button.MaterialButton
+import com.google.android.material.floatingactionbutton.FloatingActionButton
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.launch
 
 /**
  * Main activity for AVSCode — VS Code for Android.
- * Communicates with the single authoritative RuntimeController.
+ *
+ * Implements:
+ * - Dedicated live Terminal/Installation Console view.
+ * - First-launch storage access verification and explanation.
+ * - Interactive Linux CLI troubleshooting capabilities.
+ * - VS Code WebView presentation and lifecycle coordination.
  */
 class MainActivity : AppCompatActivity() {
 
@@ -27,14 +36,21 @@ class MainActivity : AppCompatActivity() {
     }
 
     // UI components
-    private lateinit var loadingOverlay: LinearLayout
-    private lateinit var errorOverlay: LinearLayout
     private lateinit var webviewContainer: FrameLayout
-    private lateinit var loadingText: TextView
-    private lateinit var statusText: TextView
+    private lateinit var terminalContainer: LinearLayout
+    private lateinit var statusBadge: TextView
+    private lateinit var btnRetry: MaterialButton
+    private lateinit var btnHideTerminal: MaterialButton
     private lateinit var progressBar: ProgressBar
-    private lateinit var errorMessage: TextView
-    private lateinit var retryButton: MaterialButton
+    private lateinit var statusHeadline: TextView
+    private lateinit var storageCard: LinearLayout
+    private lateinit var btnGrantStorage: MaterialButton
+    private lateinit var terminalScroll: ScrollView
+    private lateinit var terminalOutput: TextView
+    private lateinit var cliBar: LinearLayout
+    private lateinit var commandInput: EditText
+    private lateinit var btnRunCommand: MaterialButton
+    private lateinit var fabShowTerminal: FloatingActionButton
 
     private lateinit var runtimeController: RuntimeController
     private lateinit var webViewManager: VsCodeWebView
@@ -52,13 +68,20 @@ class MainActivity : AppCompatActivity() {
         webViewManager = VsCodeWebView(this)
 
         webViewManager.onConnectionError = { err ->
-            showError("Failed to connect to VS Code: $err")
+            appendTerminalLine("[WebView] Connection error: $err")
         }
 
         observeRuntimeState()
+        observeTerminalLogs()
 
         onBackPressedDispatcher.addCallback(this, object : androidx.activity.OnBackPressedCallback(true) {
             override fun handleOnBackPressed() {
+                if (terminalContainer.visibility == View.VISIBLE && webViewAttached) {
+                    // Switch back to editor
+                    terminalContainer.visibility = View.GONE
+                    fabShowTerminal.visibility = View.VISIBLE
+                    return
+                }
                 if (!webViewManager.handleBackPress()) {
                     isEnabled = false
                     onBackPressedDispatcher.onBackPressed()
@@ -67,28 +90,118 @@ class MainActivity : AppCompatActivity() {
             }
         })
 
-        // Trigger startup if needed
+        // Check and trigger startup
         lifecycleScope.launch {
-            if (runtimeController.appState.value !is AppState.Ready) {
-                runtimeController.startAll()
+            if (StoragePermissionHelper.isStorageConfigured(this@MainActivity)) {
+                if (runtimeController.appState.value !is AppState.Ready) {
+                    runtimeController.startAll()
+                }
+            } else {
+                showStoragePermissionCard()
             }
         }
     }
 
     private fun initViews() {
-        loadingOverlay = findViewById(R.id.loading_overlay)
-        errorOverlay = findViewById(R.id.error_overlay)
         webviewContainer = findViewById(R.id.webview_container)
-        loadingText = findViewById(R.id.loading_text)
-        statusText = findViewById(R.id.status_text)
+        terminalContainer = findViewById(R.id.terminal_container)
+        statusBadge = findViewById(R.id.status_badge)
+        btnRetry = findViewById(R.id.btn_retry)
+        btnHideTerminal = findViewById(R.id.btn_hide_terminal)
         progressBar = findViewById(R.id.progress_bar)
-        errorMessage = findViewById(R.id.error_message)
-        retryButton = findViewById(R.id.retry_button)
+        statusHeadline = findViewById(R.id.status_headline)
+        storageCard = findViewById(R.id.storage_card)
+        btnGrantStorage = findViewById(R.id.btn_grant_storage)
+        terminalScroll = findViewById(R.id.terminal_scroll)
+        terminalOutput = findViewById(R.id.terminal_output)
+        cliBar = findViewById(R.id.cli_bar)
+        commandInput = findViewById(R.id.command_input)
+        btnRunCommand = findViewById(R.id.btn_run_command)
+        fabShowTerminal = findViewById(R.id.fab_show_terminal)
 
-        retryButton.setOnClickListener {
-            showLoading("Retrying startup...")
+        btnGrantStorage.setOnClickListener {
+            handleGrantStorageAccess()
+        }
+
+        btnRetry.setOnClickListener {
+            btnRetry.visibility = View.GONE
+            appendTerminalLine("[UI] Retrying startup sequence...")
             lifecycleScope.launch {
                 runtimeController.startAll(forceRestart = true)
+            }
+        }
+
+        btnHideTerminal.setOnClickListener {
+            if (webViewAttached) {
+                terminalContainer.visibility = View.GONE
+                fabShowTerminal.visibility = View.VISIBLE
+            }
+        }
+
+        fabShowTerminal.setOnClickListener {
+            terminalContainer.visibility = View.VISIBLE
+            fabShowTerminal.visibility = View.GONE
+            scrollTerminalToBottom()
+        }
+
+        btnRunCommand.setOnClickListener {
+            submitCommand()
+        }
+
+        commandInput.setOnEditorActionListener { _, actionId, event ->
+            if (actionId == EditorInfo.IME_ACTION_SEND ||
+                (event != null && event.keyCode == KeyEvent.KEYCODE_ENTER && event.action == KeyEvent.ACTION_DOWN)
+            ) {
+                submitCommand()
+                true
+            } else {
+                false
+            }
+        }
+    }
+
+    private fun handleGrantStorageAccess() {
+        val rootfsDir = runtimeController.paths.rootfsDir
+        StoragePermissionHelper.verifyStorageAccessible(rootfsDir)
+        StoragePermissionHelper.markStorageConfigured(this, rootfsDir.absolutePath)
+        storageCard.visibility = View.GONE
+
+        // Check if external storage manager can be optionally requested
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            if (!StoragePermissionHelper.hasManageExternalStoragePermission()) {
+                try {
+                    val intent = Intent(Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION).apply {
+                        data = Uri.parse("package:$packageName")
+                    }
+                    startActivity(intent)
+                } catch (e: Exception) {
+                    AvsLogger.d(TAG, "External storage settings intent not available: ${e.message}")
+                }
+            }
+        }
+
+        appendTerminalLine("[Android] Storage access configured for: ${rootfsDir.absolutePath}")
+        lifecycleScope.launch {
+            runtimeController.startAll()
+        }
+    }
+
+    private fun showStoragePermissionCard() {
+        storageCard.visibility = View.VISIBLE
+        statusBadge.text = "NEEDS_STORAGE_ACCESS"
+        statusHeadline.text = getString(R.string.storage_access_title)
+    }
+
+    private fun submitCommand() {
+        val cmd = commandInput.text.toString().trim()
+        if (cmd.isEmpty()) return
+
+        commandInput.setText("")
+        appendTerminalLine("guest:$ $cmd")
+
+        lifecycleScope.launch {
+            runtimeController.executeGuestCommand(cmd) { line ->
+                appendTerminalLine(line)
             }
         }
     }
@@ -97,47 +210,144 @@ class MainActivity : AppCompatActivity() {
         lifecycleScope.launch {
             runtimeController.appState.collectLatest { state ->
                 AvsLogger.d(TAG, "Observed AppState: $state")
+
+                // Update CLI bar visibility
+                cliBar.visibility = if (state.canAccessCli) View.VISIBLE else View.GONE
+
+                // Update Retry button visibility
+                btnRetry.visibility = if (state.isFailed) View.VISIBLE else View.GONE
+
                 when (state) {
-                    is AppState.NotInstalled -> {
-                        showLoading("Preparing installation...")
+                    is AppState.NeedsStorageAccess -> {
+                        showStoragePermissionCard()
+                        progressBar.visibility = View.GONE
                     }
-                    is AppState.InstallingRootfs -> {
-                        showLoading("Installing Ubuntu Linux...")
-                        updateStatus(state.status)
+                    is AppState.NotInstalled -> {
+                        statusBadge.text = "NOT_INSTALLED"
+                        statusHeadline.text = "Ready to download Ubuntu rootfs..."
+                        progressBar.visibility = View.GONE
+                    }
+                    is AppState.DownloadingRootfs -> {
+                        storageCard.visibility = View.GONE
+                        statusBadge.text = "DOWNLOADING_ROOTFS"
+                        statusHeadline.text = state.status
                         progressBar.visibility = View.VISIBLE
                         progressBar.progress = (state.progress * 100).toInt()
                     }
-                    is AppState.StartingLinux -> {
-                        progressBar.visibility = View.GONE
-                        showLoading("Starting Linux userspace...")
-                        updateStatus("Initializing PRoot supervisor...")
+                    is AppState.ExtractingRootfs -> {
+                        storageCard.visibility = View.GONE
+                        statusBadge.text = "EXTRACTING_ROOTFS"
+                        statusHeadline.text = state.status
+                        progressBar.visibility = View.VISIBLE
+                        progressBar.progress = (state.progress * 100).toInt()
                     }
-                    is AppState.Bootstrapping -> {
+                    is AppState.RootfsReady -> {
+                        storageCard.visibility = View.GONE
+                        statusBadge.text = "ROOTFS_READY"
+                        statusHeadline.text = "Ubuntu rootfs verified."
                         progressBar.visibility = View.GONE
-                        showLoading("Bootstrapping development tools...")
-                        updateStatus(state.status)
+                    }
+                    is AppState.StartingLinux -> {
+                        statusBadge.text = "STARTING_LINUX"
+                        statusHeadline.text = "Starting Linux PRoot runtime..."
+                        progressBar.visibility = View.GONE
+                    }
+                    is AppState.VerifyingLinux -> {
+                        statusBadge.text = "VERIFYING_LINUX"
+                        statusHeadline.text = "Running userspace diagnostics (/usr/bin/mkdir probe)..."
+                        progressBar.visibility = View.GONE
+                    }
+                    is AppState.LinuxReady -> {
+                        statusBadge.text = "LINUX_READY"
+                        statusHeadline.text = "Linux userspace active. CLI available."
+                        progressBar.visibility = View.GONE
+                    }
+                    is AppState.InstallingPackages -> {
+                        statusBadge.text = "INSTALLING_PACKAGES"
+                        statusHeadline.text = state.status
+                        progressBar.visibility = View.GONE
+                    }
+                    is AppState.InstallingVsCode -> {
+                        statusBadge.text = "INSTALLING_VSCODE"
+                        statusHeadline.text = state.status
+                        progressBar.visibility = View.VISIBLE
+                        progressBar.progress = (state.progress * 100).toInt()
                     }
                     is AppState.StartingVsCode -> {
+                        statusBadge.text = "STARTING_VSCODE"
+                        statusHeadline.text = "Starting VS Code Server on port 8080..."
                         progressBar.visibility = View.GONE
-                        showLoading("Starting VS Code Server...")
-                        updateStatus("Launching editor on port 8080...")
                     }
                     is AppState.Ready -> {
+                        statusBadge.text = "READY"
+                        statusHeadline.text = "VS Code is ready at ${state.url}"
                         progressBar.visibility = View.GONE
-                        loadingOverlay.visibility = View.GONE
-                        errorOverlay.visibility = View.GONE
+                        btnHideTerminal.visibility = View.VISIBLE
 
                         attachAndLoadWebView(state.url)
+                        // Transition to editor
+                        terminalContainer.visibility = View.GONE
+                        fabShowTerminal.visibility = View.VISIBLE
                     }
                     is AppState.Stopping -> {
-                        showLoading("Stopping runtime...")
+                        statusBadge.text = "STOPPING"
+                        statusHeadline.text = "Stopping Linux runtime..."
+                        progressBar.visibility = View.GONE
+                    }
+                    is AppState.RootfsFailed -> {
+                        statusBadge.text = "ROOTFS_FAILED"
+                        statusHeadline.text = state.message
+                        progressBar.visibility = View.GONE
+                        appendTerminalLine("[ERROR] ${state.message}")
+                    }
+                    is AppState.LinuxFailed -> {
+                        statusBadge.text = "LINUX_FAILED"
+                        statusHeadline.text = state.message
+                        progressBar.visibility = View.GONE
+                        appendTerminalLine("[ERROR] ${state.message}")
+                    }
+                    is AppState.PackageInstallFailed -> {
+                        statusBadge.text = "PACKAGE_INSTALL_FAILED"
+                        statusHeadline.text = state.message
+                        progressBar.visibility = View.GONE
+                        appendTerminalLine("[ERROR] ${state.message}")
+                    }
+                    is AppState.VsCodeFailed -> {
+                        statusBadge.text = "VSCODE_FAILED"
+                        statusHeadline.text = state.message
+                        progressBar.visibility = View.GONE
+                        appendTerminalLine("[ERROR] ${state.message}")
+                        // CLI remains active in terminalContainer for debugging
+                        terminalContainer.visibility = View.VISIBLE
                     }
                     is AppState.Failed -> {
+                        statusBadge.text = "FAILED"
+                        statusHeadline.text = state.message
                         progressBar.visibility = View.GONE
-                        showError(state.message)
+                        appendTerminalLine("[ERROR] ${state.message}")
                     }
+                    else -> {}
                 }
             }
+        }
+    }
+
+    private fun observeTerminalLogs() {
+        lifecycleScope.launch {
+            runtimeController.terminalLogs.collect { line ->
+                appendTerminalLine(line)
+            }
+        }
+    }
+
+    private fun appendTerminalLine(line: String) {
+        terminalOutput.append(line + "\n")
+        scrollTerminalToBottom()
+    }
+
+    private fun scrollTerminalToBottom() {
+        terminalScroll.post {
+            terminalScroll.fullScroll(View.FOCUS_DOWN)
         }
     }
 
@@ -151,23 +361,6 @@ class MainActivity : AppCompatActivity() {
         webViewManager.loadUrl(url)
     }
 
-    private fun showLoading(message: String) {
-        loadingText.text = message
-        loadingOverlay.visibility = View.VISIBLE
-        errorOverlay.visibility = View.GONE
-    }
-
-    private fun updateStatus(status: String) {
-        statusText.text = status
-        statusText.visibility = View.VISIBLE
-    }
-
-    private fun showError(message: String) {
-        errorMessage.text = message
-        loadingOverlay.visibility = View.GONE
-        errorOverlay.visibility = View.VISIBLE
-    }
-
     override fun onResume() {
         super.onResume()
         webViewManager.onResume()
@@ -179,8 +372,10 @@ class MainActivity : AppCompatActivity() {
     }
 
     override fun onKeyDown(keyCode: Int, event: KeyEvent?): Boolean {
-        if (event != null && webViewManager.handleKeyEvent(event)) {
-            return true
+        if (event != null && webViewAttached && terminalContainer.visibility != View.VISIBLE) {
+            if (webViewManager.handleKeyEvent(event)) {
+                return true
+            }
         }
         return super.onKeyDown(keyCode, event)
     }

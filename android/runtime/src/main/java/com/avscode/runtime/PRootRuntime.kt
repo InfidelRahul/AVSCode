@@ -17,8 +17,12 @@ import java.io.RandomAccessFile
 /**
  * Production PRoot runtime integrating with LinuxDroid PRoot and NativeSpawn.
  *
- * Provides userspace Linux execution, process group isolation,
- * environment configuration, and process management.
+ * Implements strict host/guest separation:
+ * - Inside the guest, `/` is the Ubuntu rootfs.
+ * - Standard pseudofilesystems (-b /dev, -b /proc, -b /sys) are bound.
+ * - Host /tmp and host /system are NOT bound into the guest.
+ * - Guest environment does not inherit Android LD_LIBRARY_PATH.
+ * - Executes commands inside guest as `/bin/bash -lc '<command>'`.
  */
 class PRootRuntime(
     private val context: Context,
@@ -128,6 +132,7 @@ class PRootRuntime(
 
     /**
      * Builds standard PRoot CLI invocation arguments.
+     * Enforces that guest operates exclusively against the Ubuntu rootfs.
      */
     fun buildPRootArgs(guestCommand: String, workingDir: String = "/home/user"): List<String> {
         val proot = getProotBinary()
@@ -143,26 +148,13 @@ class PRootRuntime(
             "-b", "/sys"
         )
 
-        // Bind standard host directories if they exist
-        listOf("/system", "/apex", "/vendor", "/product").forEach { sysPath ->
-            if (File(sysPath).exists()) {
-                args.add("-b")
-                args.add(sysPath)
-            }
-        }
-
-        // Bind host cache tmp directory to /tmp
-        val tmpDir = paths.prootTmpDir
-        args.add("-b")
-        args.add("${tmpDir.absolutePath}:/tmp")
-
         // Working directory inside rootfs
         args.add("-w")
         args.add(workingDir)
 
-        // Guest shell and command
+        // Guest shell and command — use login shell (-lc) to initialize full guest environment
         args.add("/bin/bash")
-        args.add("-c")
+        args.add("-lc")
         args.add(guestCommand)
 
         return args
@@ -170,17 +162,19 @@ class PRootRuntime(
 
     /**
      * Builds standard environment variables for PRoot execution.
+     * Note: LD_LIBRARY_PATH is deliberately omitted from the guest environment
+     * to prevent glibc executables from loading incompatible Android Bionic libraries.
      */
     fun buildEnvironment(homeDir: String = "/home/user"): Array<String> {
         val loader = getLoaderBinary()
         return arrayOf(
             "PROOT_LOADER=${loader.absolutePath}",
             "PROOT_TMP_DIR=${paths.prootTmpDir.absolutePath}",
-            "LD_LIBRARY_PATH=${paths.nativeLibDir.absolutePath}",
-            "GLIBC_TUNABLES=glibc.pthread.rseq=0",
             "PROOT_NO_SECCOMP=1",
+            "GLIBC_TUNABLES=glibc.pthread.rseq=0",
             "HOME=$homeDir",
             "USER=user",
+            "SHELL=/bin/bash",
             "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
             "TERM=xterm-256color",
             "LANG=C.UTF-8",
@@ -224,13 +218,6 @@ class PRootRuntime(
             getProotBinary()
             getLoaderBinary()
 
-            // Verify a basic echo command executes inside PRoot
-            val testResult = execute("echo 'AVSCode Linux Initialized'")
-            if (testResult.isFailure) {
-                throw RuntimeException("PRoot self-test failed: ${testResult.exceptionOrNull()?.message}")
-            }
-            AvsLogger.i(TAG, "PRoot self-test passed: ${testResult.getOrNull()?.trim()}")
-
             // Launch persistent background supervisor session
             val logFile = paths.runtimeLogFile
             val args = buildPRootArgs("while true; do sleep 3600; done", "/root")
@@ -248,6 +235,60 @@ class PRootRuntime(
             _state.value = RuntimeState.RUNNING
 
             AvsLogger.i(TAG, "Linux runtime running with supervisor PID $supervisorPid")
+        }
+    }
+
+    /**
+     * Executes explicit Linux userspace verification diagnostic probe.
+     * Must verify that guest userspace is entered and `command -v mkdir`
+     * resolves to the Ubuntu guest executable and executes properly.
+     */
+    suspend fun verifyGuestUserspace(onOutput: ((String) -> Unit)? = null): Result<String> = withContext(Dispatchers.IO) {
+        AvsLogger.i(TAG, "Running explicit Linux userspace verification...")
+
+        runCatchingResult {
+            val probeCmd = buildString {
+                append("printf 'LINUXDROID_GUEST_READY\\n' && ")
+                append("printf 'root=%s\\n' \"\$(id -u)\" && ")
+                append("printf 'cwd=%s\\n' \"\$PWD\" && ")
+                append("printf 'rootfs=%s\\n' \"\$(readlink -f /)\" && ")
+                append("printf 'uname=%s\\n' \"\$(uname -a)\" && ")
+                append("printf 'shell=%s\\n' \"\$SHELL\" && ")
+                append("command -v bash && ")
+                append("command -v mkdir && ")
+                append("command -v tar && ")
+                append("command -v apt-get && ")
+                append("mkdir -p /tmp/.guest_verify_test && rmdir /tmp/.guest_verify_test && ")
+                append("echo 'MKDIR_EXECUTION_VERIFIED'")
+            }
+
+            val outputBuilder = StringBuilder()
+            val exitCode = executeStreaming(probeCmd) { line ->
+                outputBuilder.append(line).append("\n")
+                onOutput?.invoke(line)
+            }.getOrThrow()
+
+            val output = outputBuilder.toString()
+            AvsLogger.i(TAG, "Linux verification output:\n$output")
+
+            if (exitCode != 0) {
+                throw LinuxVerificationException("Guest verification command failed with exit code $exitCode:\n$output")
+            }
+
+            if (!output.contains("LINUXDROID_GUEST_READY")) {
+                throw LinuxVerificationException("Guest failed ready handshake:\n$output")
+            }
+
+            if (!output.contains("MKDIR_EXECUTION_VERIFIED")) {
+                throw LinuxVerificationException("Guest failed mkdir execution verification:\n$output")
+            }
+
+            if (!output.contains("mkdir")) {
+                throw LinuxVerificationException("command -v mkdir failed in guest userspace:\n$output")
+            }
+
+            AvsLogger.i(TAG, "Linux userspace verified successfully")
+            output
         }
     }
 
@@ -346,9 +387,20 @@ class PRootRuntime(
                     }
 
                     if (status != -2) { // Process finished
+                        // Final drain to ensure complete log capture
+                        if (outputFile.exists() && outputFile.length() > lastPos) {
+                            RandomAccessFile(outputFile, "r").use { raf ->
+                                raf.seek(lastPos)
+                                var line = raf.readLine()
+                                while (line != null) {
+                                    onOutput(line)
+                                    line = raf.readLine()
+                                }
+                            }
+                        }
                         return@runCatchingResult status
                     }
-                    delay(150)
+                    delay(100)
                 }
 
                 @Suppress("UNREACHABLE_CODE")
@@ -379,4 +431,6 @@ class PRootRuntime(
         }
         supervisorPid = null
     }
+
+    class LinuxVerificationException(message: String) : Exception(message)
 }

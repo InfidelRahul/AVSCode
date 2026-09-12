@@ -18,8 +18,11 @@ import java.util.zip.GZIPInputStream
 /**
  * Robust Ubuntu Rootfs Installer.
  *
- * Handles downloading, safe extraction, post-extraction configuration,
- * and atomic installation verification.
+ * Android host responsibility:
+ * 1. Download Ubuntu 26.04 Base ARM64 archive.
+ * 2. Extract filesystem preserving POSIX modes, permissions, symlinks, and hardlinks.
+ * 3. Verify Linux directory structure (/bin, /usr, /etc, /home, /tmp) and essential binaries.
+ * 4. Configure guest networking (resolv.conf, hosts), APT privileges, user, and deploy bootstrap.sh.
  */
 class RootfsInstaller(private val context: Context) {
 
@@ -34,13 +37,19 @@ class RootfsInstaller(private val context: Context) {
 
         // Buffer size for streaming
         private const val BUFFER_SIZE = 64 * 1024
+
+        // POSIX file modes in hex
+        private const val MODE_755 = 0x1ED // 0755
+        private const val MODE_644 = 0x1A4 // 0644
+        private const val MODE_EXEC_BITS = 0x49 // 0111
+        private const val MODE_1777 = 0x3FF // 01777
     }
 
     private val paths = AppPaths.getInstance(context)
     private val tempDownloadFile = File(paths.cacheDir, "ubuntu-base-arm64.tar.gz")
 
     /**
-     * Check if rootfs is properly installed and verified.
+     * Check if rootfs is properly installed, complete, and verified.
      */
     fun isInstalled(): Boolean {
         val rootfsDir = paths.rootfsDir
@@ -48,8 +57,9 @@ class RootfsInstaller(private val context: Context) {
         val hasBash = File(rootfsDir, "bin/bash").exists() || File(rootfsDir, "usr/bin/bash").exists()
         val hasSh = File(rootfsDir, "bin/sh").exists() || File(rootfsDir, "usr/bin/sh").exists()
         val hasPasswd = File(rootfsDir, "etc/passwd").exists()
+        val hasMkdir = File(rootfsDir, "usr/bin/mkdir").exists()
 
-        return marker.exists() && hasBash && hasSh && hasPasswd
+        return marker.exists() && hasBash && hasSh && hasPasswd && hasMkdir
     }
 
     /**
@@ -63,11 +73,11 @@ class RootfsInstaller(private val context: Context) {
      * Install the rootfs with progress feedback.
      */
     suspend fun install(progressCallback: ((Float, String) -> Unit)? = null): Result<Unit> = withContext(Dispatchers.IO) {
-        AvsLogger.i(TAG, "Starting rootfs installation")
+        AvsLogger.i(TAG, "Starting rootfs installation on Android host")
 
         runCatchingResult {
             if (isInstalled()) {
-                AvsLogger.i(TAG, "Rootfs is already installed, reusing existing installation")
+                AvsLogger.i(TAG, "Rootfs is already installed and verified, reusing existing installation")
                 progressCallback?.invoke(1.0f, "Rootfs ready")
                 return@runCatchingResult Unit
             }
@@ -76,9 +86,9 @@ class RootfsInstaller(private val context: Context) {
             checkDiskSpace()
 
             // Step 1: Download
-            progressCallback?.invoke(0.05f, "Downloading Ubuntu ARM64 rootfs...")
+            progressCallback?.invoke(0.05f, "Downloading Ubuntu 26.04 ARM64 rootfs...")
             downloadRootfs { progress ->
-                progressCallback?.invoke(0.05f + progress * 0.45f, "Downloading Ubuntu ARM64 rootfs (${(progress * 100).toInt()}%)...")
+                progressCallback?.invoke(0.05f + progress * 0.45f, "Downloading Ubuntu 26.04 ARM64 rootfs (${(progress * 100).toInt()}%)...")
             }
 
             // Step 2: Extract to staging directory
@@ -87,17 +97,18 @@ class RootfsInstaller(private val context: Context) {
                 stagingDir.deleteRecursively()
             }
             stagingDir.mkdirs()
+            ensureDirTraversable(stagingDir)
 
             progressCallback?.invoke(0.50f, "Extracting Ubuntu filesystem...")
             extractTarGz(tempDownloadFile, stagingDir) { progress ->
                 progressCallback?.invoke(0.50f + progress * 0.40f, "Extracting Ubuntu filesystem (${(progress * 100).toInt()}%)...")
             }
 
-            // Step 3: Configure critical files (DNS, APT, Users)
+            // Step 3: Configure critical files (DNS, APT, Users, bootstrap script)
             progressCallback?.invoke(0.92f, "Configuring guest environment...")
             configureGuestEnvironment(stagingDir)
 
-            // Step 4: Verify staged rootfs
+            // Step 4: Verify staged rootfs and repair any broken core utils
             verifyStagedRootfs(stagingDir)
 
             // Step 5: Mark installed in staging directory
@@ -110,7 +121,6 @@ class RootfsInstaller(private val context: Context) {
             }
             val renamed = stagingDir.renameTo(paths.rootfsDir)
             if (!renamed) {
-                // If direct rename fails (e.g. across mount points), copy recursively
                 stagingDir.copyRecursively(paths.rootfsDir, overwrite = true)
                 stagingDir.deleteRecursively()
             }
@@ -118,7 +128,7 @@ class RootfsInstaller(private val context: Context) {
             // Step 7: Cleanup downloaded archive
             cleanupTempFiles()
 
-            progressCallback?.invoke(1.0f, "Installation complete")
+            progressCallback?.invoke(1.0f, "Rootfs installation complete")
             AvsLogger.i(TAG, "Rootfs installation completed successfully at: ${paths.rootfsDir.absolutePath}")
         }
     }
@@ -136,9 +146,8 @@ class RootfsInstaller(private val context: Context) {
     }
 
     private suspend fun downloadRootfs(progressCallback: ((Float) -> Unit)? = null) = withContext(Dispatchers.IO) {
-        // If file already exists and has expected size (> 25MB), reuse it
         if (tempDownloadFile.exists() && tempDownloadFile.length() > 25 * 1024 * 1024) {
-            AvsLogger.i(TAG, "Existing download file found (${tempDownloadFile.length()} bytes), verifying...")
+            AvsLogger.i(TAG, "Existing download file found (${tempDownloadFile.length()} bytes), reusing")
             progressCallback?.invoke(1.0f)
             return@withContext
         }
@@ -181,38 +190,12 @@ class RootfsInstaller(private val context: Context) {
         progressCallback: ((Float) -> Unit)? = null
     ) = withContext(Dispatchers.IO) {
         AvsLogger.i(TAG, "Extracting ${tarGzFile.name} to ${destDir.absolutePath}")
-
-        // Attempt system tar first if available
-        var systemTarSuccess = false
-        try {
-            val process = ProcessBuilder(
-                "tar",
-                "-xzf",
-                tarGzFile.absolutePath,
-                "-C",
-                destDir.absolutePath
-            ).redirectErrorStream(true).start()
-
-            val exitCode = process.waitFor()
-            if (exitCode == 0 && File(destDir, "etc/passwd").exists()) {
-                systemTarSuccess = true
-                progressCallback?.invoke(1.0f)
-                AvsLogger.i(TAG, "Extracted rootfs using system tar successfully")
-            } else {
-                AvsLogger.w(TAG, "System tar returned exit code $exitCode, falling back to internal extractor")
-            }
-        } catch (e: Exception) {
-            AvsLogger.w(TAG, "System tar invocation failed: ${e.message}, falling back to internal extractor")
-        }
-
-        if (!systemTarSuccess) {
-            extractWithInternalTar(tarGzFile, destDir, progressCallback)
-        }
+        extractWithInternalTar(tarGzFile, destDir, progressCallback)
     }
 
     /**
-     * Pure Kotlin streaming Tar.gz extractor.
-     * Handles standard POSIX ustar entries, symlinks, directories, and hard links without requiring external dependencies.
+     * Pure Kotlin streaming Tar.gz extractor with full POSIX permissions, symlink,
+     * and hard link preservation.
      */
     private fun extractWithInternalTar(
         tarGzFile: File,
@@ -231,6 +214,7 @@ class RootfsInstaller(private val context: Context) {
         GZIPInputStream(countingStream, BUFFER_SIZE).use { gzipStream ->
             val headerBuffer = ByteArray(512)
             var nextLongName: String? = null
+            var nextLongLink: String? = null
             var lastProgressUpdate = 0L
 
             while (true) {
@@ -249,25 +233,40 @@ class RootfsInstaller(private val context: Context) {
 
                 val rawName = String(headerBuffer, 0, 100, Charsets.UTF_8).trimEnd('\u0000', ' ')
                 val typeFlag = headerBuffer[156].toInt().toChar()
+                val modeString = String(headerBuffer, 100, 8, Charsets.US_ASCII).trimEnd('\u0000', ' ')
+                val mode = try {
+                    if (modeString.isNotBlank()) modeString.trim().toInt(8) else 0
+                } catch (e: Exception) {
+                    0
+                }
                 val sizeString = String(headerBuffer, 124, 12, Charsets.US_ASCII).trimEnd('\u0000', ' ')
                 val size = try {
                     if (sizeString.isNotBlank()) sizeString.trim().toLong(8) else 0L
                 } catch (e: Exception) {
                     0L
                 }
-                val linkName = String(headerBuffer, 157, 100, Charsets.UTF_8).trimEnd('\u0000', ' ')
+                val rawLinkName = String(headerBuffer, 157, 100, Charsets.UTF_8).trimEnd('\u0000', ' ')
 
-                val entryName = nextLongName ?: rawName
-                nextLongName = null
-
-                // Handle GNU LongLink
-                if (typeFlag == 'L' || entryName == "././@LongLink") {
+                // Handle GNU LongLink / LongName extensions
+                if (typeFlag == 'L' || rawName == "././@LongLink") {
                     val longNameBytes = ByteArray(size.toInt())
                     readFully(gzipStream, longNameBytes)
                     skipPadding(gzipStream, size)
                     nextLongName = String(longNameBytes, Charsets.UTF_8).trimEnd('\u0000', ' ')
                     continue
                 }
+                if (typeFlag == 'K') {
+                    val longLinkBytes = ByteArray(size.toInt())
+                    readFully(gzipStream, longLinkBytes)
+                    skipPadding(gzipStream, size)
+                    nextLongLink = String(longLinkBytes, Charsets.UTF_8).trimEnd('\u0000', ' ')
+                    continue
+                }
+
+                val entryName = (nextLongName ?: rawName).removePrefix("./")
+                nextLongName = null
+                val linkName = (nextLongLink ?: rawLinkName).removePrefix("./")
+                nextLongLink = null
 
                 if (entryName.isEmpty()) continue
 
@@ -276,9 +275,13 @@ class RootfsInstaller(private val context: Context) {
                 when (typeFlag) {
                     '5' -> { // Directory
                         targetFile.mkdirs()
+                        ensureDirTraversable(targetFile)
+                        try {
+                            Os.chmod(targetFile.absolutePath, if (mode != 0) (mode or MODE_755) else MODE_755)
+                        } catch (e: Exception) {}
                     }
                     '2' -> { // Symlink
-                        targetFile.parentFile?.mkdirs()
+                        targetFile.parentFile?.let { ensureDirTraversable(it) }
                         targetFile.delete()
                         try {
                             Os.symlink(linkName, targetFile.absolutePath)
@@ -287,31 +290,59 @@ class RootfsInstaller(private val context: Context) {
                         }
                     }
                     '1' -> { // Hard link
-                        targetFile.parentFile?.mkdirs()
+                        targetFile.parentFile?.let { ensureDirTraversable(it) }
                         targetFile.delete()
-                        val original = File(destDir, linkName)
+                        val cleanLink = linkName.removePrefix("/")
+                        val original = File(destDir, cleanLink)
+                        var linked = false
                         try {
                             Os.link(original.absolutePath, targetFile.absolutePath)
+                            linked = true
                         } catch (e: Exception) {
-                            // Fallback to copy or symlink
+                            // Direct Os.link might fail across mount types
+                        }
+
+                        if (!linked) {
                             try {
                                 if (original.exists()) {
                                     original.copyTo(targetFile, overwrite = true)
+                                    targetFile.setReadable(true, false)
+                                    targetFile.setExecutable(original.canExecute() || (mode and MODE_EXEC_BITS != 0), false)
+                                    try {
+                                        Os.chmod(targetFile.absolutePath, if (mode != 0) mode else MODE_755)
+                                    } catch (e: Exception) {}
                                 } else {
-                                    Os.symlink(linkName, targetFile.absolutePath)
+                                    // Fallback to relative symlink inside rootfs
+                                    Os.symlink(cleanLink, targetFile.absolutePath)
                                 }
                             } catch (e2: Exception) {
                                 AvsLogger.w(TAG, "Hard link fallback failed for $entryName: ${e2.message}")
                             }
                         }
                     }
-                    else -> { // Regular file
-                        targetFile.parentFile?.mkdirs()
+                    else -> { // Regular file ('0', '\u0000', etc.)
+                        targetFile.parentFile?.let { ensureDirTraversable(it) }
                         FileOutputStream(targetFile).use { out ->
                             copyBytes(gzipStream, out, size)
                         }
                         skipPadding(gzipStream, size)
-                        targetFile.setExecutable(true, false)
+                        targetFile.setReadable(true, false)
+
+                        val isExecutable = (mode and MODE_EXEC_BITS != 0) ||
+                                entryName.startsWith("bin/") ||
+                                entryName.startsWith("usr/bin/") ||
+                                entryName.startsWith("sbin/") ||
+                                entryName.startsWith("usr/sbin/") ||
+                                entryName.contains("/bin/")
+
+                        if (isExecutable) {
+                            targetFile.setExecutable(true, false)
+                        }
+
+                        try {
+                            val targetMode = if (mode != 0) mode else if (isExecutable) MODE_755 else MODE_644
+                            Os.chmod(targetFile.absolutePath, targetMode)
+                        } catch (e: Exception) {}
                     }
                 }
 
@@ -326,7 +357,19 @@ class RootfsInstaller(private val context: Context) {
             }
         }
         progressCallback?.invoke(1.0f)
-        AvsLogger.i(TAG, "Internal tar extraction finished")
+        AvsLogger.i(TAG, "Internal tar extraction finished with POSIX modes and permissions applied")
+    }
+
+    private fun ensureDirTraversable(dir: File) {
+        if (!dir.exists()) {
+            dir.mkdirs()
+        }
+        dir.setReadable(true, false)
+        dir.setWritable(true, false)
+        dir.setExecutable(true, false)
+        try {
+            Os.chmod(dir.absolutePath, MODE_755)
+        } catch (e: Exception) {}
     }
 
     private fun readFully(input: InputStream, buffer: ByteArray) {
@@ -367,38 +410,40 @@ class RootfsInstaller(private val context: Context) {
     }
 
     /**
-     * Configure essential rootfs files so networking, APT, and users work seamlessly.
+     * Configure essential rootfs files so networking, APT, users, and guest bootstrap work seamlessly.
      */
     private fun configureGuestEnvironment(rootfsDir: File) {
         // 1. DNS configuration
         val resolvConf = File(rootfsDir, "etc/resolv.conf")
-        resolvConf.parentFile?.mkdirs()
+        resolvConf.parentFile?.let { ensureDirTraversable(it) }
         resolvConf.delete()
         resolvConf.writeText("nameserver 8.8.8.8\nnameserver 1.1.1.1\n")
+        resolvConf.setReadable(true, false)
 
         // 2. Hosts configuration
         val hosts = File(rootfsDir, "etc/hosts")
         hosts.writeText("127.0.0.1 localhost\n::1 localhost\n")
+        hosts.setReadable(true, false)
 
         // 3. Prevent APT from dropping privileges to _apt (fails in PRoot sandbox)
         val aptConfigDir = File(rootfsDir, "etc/apt/apt.conf.d")
-        aptConfigDir.mkdirs()
+        ensureDirTraversable(aptConfigDir)
         File(aptConfigDir, "99nodrop").writeText("APT::Sandbox::User \"root\";\n")
+        File(aptConfigDir, "99nolanguages").writeText("Acquire::Languages \"none\";\n")
 
-        // 4. Ensure /tmp exists with permissive permissions
+        // 4. Ensure guest /tmp exists with 1777 permissions
         val tmpDir = File(rootfsDir, "tmp")
-        tmpDir.mkdirs()
-        tmpDir.setReadable(true, false)
+        ensureDirTraversable(tmpDir)
         tmpDir.setWritable(true, false)
-        tmpDir.setExecutable(true, false)
+        try {
+            Os.chmod(tmpDir.absolutePath, MODE_1777)
+        } catch (e: Exception) {}
 
         // 5. Ensure /home/user and /home/user/projects exist
         val userHome = File(rootfsDir, "home/user")
         val userProjects = File(userHome, "projects")
-        userProjects.mkdirs()
-        userHome.setReadable(true, false)
-        userHome.setWritable(true, false)
-        userHome.setExecutable(true, false)
+        ensureDirTraversable(userHome)
+        ensureDirTraversable(userProjects)
 
         // 6. Ensure user account in /etc/passwd
         val passwdFile = File(rootfsDir, "etc/passwd")
@@ -420,19 +465,129 @@ class RootfsInstaller(private val context: Context) {
 
         // 8. Ensure root profile sets PATH
         val rootProfile = File(rootfsDir, "root/.profile")
-        rootProfile.parentFile?.mkdirs()
+        rootProfile.parentFile?.let { ensureDirTraversable(it) }
         if (!rootProfile.exists()) {
             rootProfile.writeText("export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin\n")
         }
 
-        AvsLogger.d(TAG, "Configured guest environment (DNS, APT, /home/user/projects)")
+        // 9. Deploy guest-side bootstrap script /usr/local/lib/avscode/bootstrap.sh
+        deployGuestBootstrapScript(rootfsDir)
+
+        AvsLogger.d(TAG, "Configured guest environment (DNS, APT, /home/user/projects, bootstrap.sh)")
+    }
+
+    /**
+     * Deploys the Linux-side bootstrap script into the rootfs.
+     */
+    private fun deployGuestBootstrapScript(rootfsDir: File) {
+        val scriptDir = File(rootfsDir, "usr/local/lib/avscode")
+        ensureDirTraversable(scriptDir)
+        val scriptFile = File(scriptDir, "bootstrap.sh")
+
+        val scriptContent = """
+            |#!/bin/bash
+            |set -eo pipefail
+            |
+            |echo "=================================================="
+            |echo "    AVSCode Linux Environment Bootstrap"
+            |echo "=================================================="
+            |
+            |# 1. Validate the guest environment
+            |echo "[1/6] Validating Linux guest environment..."
+            |ROOT_ID="${'$'}(id -u)"
+            |if [ "${'$'}ROOT_ID" -ne 0 ]; then
+            |    echo "ERROR: Must run inside PRoot root context (uid 0, got ${'$'}ROOT_ID)" >&2
+            |    exit 1
+            |fi
+            |
+            |export DEBIAN_FRONTEND=noninteractive
+            |export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+            |
+            |# Verify essential utilities
+            |for tool in bash mkdir tar rm chmod cat; do
+            |    if ! command -v "${'$'}tool" >/dev/null 2>&1; then
+            |        echo "ERROR: Missing essential utility: ${'$'}tool" >&2
+            |        exit 2
+            |    fi
+            |done
+            |echo "Guest utilities verified: mkdir=${'$'}(command -v mkdir), tar=${'$'}(command -v tar)"
+            |
+            |# 2. Configure APT and DNS
+            |echo "[2/6] Configuring APT package manager..."
+            |mkdir -p /etc/apt/apt.conf.d
+            |cat <<'EOF' > /etc/apt/apt.conf.d/99avscode
+            |APT::Sandbox::User "root";
+            |Acquire::Languages "none";
+            |Acquire::Retries "3";
+            |EOF
+            |
+            |if [ ! -s /etc/resolv.conf ]; then
+            |    echo "nameserver 8.8.8.8" > /etc/resolv.conf
+            |    echo "nameserver 1.1.1.1" >> /etc/resolv.conf
+            |fi
+            |
+            |# 3. Update package indexes
+            |echo "[3/6] Updating APT package repositories..."
+            |apt-get update -qq || {
+            |    echo "WARNING: apt-get update returned non-zero, retrying..."
+            |    apt-get update
+            |}
+            |
+            |# 4. Install required base & development tools
+            |echo "[4/6] Installing core tools (ca-certificates, curl, wget, git, python3)..."
+            |apt-get install -y --no-install-recommends \
+            |    ca-certificates \
+            |    curl \
+            |    wget \
+            |    git \
+            |    python3 \
+            |    procps || {
+            |    echo "ERROR: Failed to install core development packages" >&2
+            |    exit 3
+            |}
+            |
+            |# 5. Create / configure Linux user 'user'
+            |echo "[5/6] Configuring Linux user environment..."
+            |if ! id -u user >/dev/null 2>&1; then
+            |    useradd -m -s /bin/bash user || true
+            |fi
+            |mkdir -p /home/user/projects /home/user/.local/share/code-server /tmp
+            |chmod 1777 /tmp
+            |chown -R user:user /home/user || true
+            |chmod 755 /home/user
+            |
+            |if [ ! -f /home/user/.profile ]; then
+            |    cat <<'EOF' > /home/user/.profile
+            |export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/opt/code-server/bin
+            |export SHELL=/bin/bash
+            |export LANG=C.UTF-8
+            |EOF
+            |    chown user:user /home/user/.profile || true
+            |fi
+            |
+            |# 6. Mark bootstrap complete
+            |mkdir -p /var/lib/avscode
+            |touch /var/lib/avscode/bootstrapped
+            |echo "=================================================="
+            |echo "    AVSCode Linux Bootstrap SUCCESSFUL"
+            |echo "=================================================="
+            |exit 0
+        """.trimMargin()
+
+        scriptFile.writeText(scriptContent)
+        scriptFile.setReadable(true, false)
+        scriptFile.setExecutable(true, false)
+        try {
+            Os.chmod(scriptFile.absolutePath, MODE_755)
+        } catch (e: Exception) {}
     }
 
     private fun verifyStagedRootfs(stagingDir: File) {
         val required = listOf(
             "etc/passwd",
             "bin/sh",
-            "usr/bin"
+            "usr/bin",
+            "tmp"
         )
         for (rel in required) {
             val f = File(stagingDir, rel)
@@ -440,10 +595,44 @@ class RootfsInstaller(private val context: Context) {
                 throw VerificationException("Rootfs verification failed: missing $rel")
             }
         }
+
         val hasBash = File(stagingDir, "bin/bash").exists() || File(stagingDir, "usr/bin/bash").exists()
         if (!hasBash) {
             throw VerificationException("Rootfs verification failed: missing bash")
         }
+
+        // Verify and repair usr/bin/mkdir if needed
+        val mkdirFile = File(stagingDir, "usr/bin/mkdir")
+        if (!mkdirFile.exists() || !mkdirFile.canExecute()) {
+            AvsLogger.w(TAG, "usr/bin/mkdir missing or not executable in staging, repairing...")
+            val coreutils = File(stagingDir, "usr/bin/coreutils")
+            val gnumkdir = File(stagingDir, "usr/bin/gnumkdir")
+            when {
+                gnumkdir.exists() -> {
+                    mkdirFile.delete()
+                    try {
+                        Os.symlink("gnumkdir", mkdirFile.absolutePath)
+                    } catch (e: Exception) {
+                        gnumkdir.copyTo(mkdirFile, overwrite = true)
+                    }
+                }
+                coreutils.exists() -> {
+                    mkdirFile.delete()
+                    try {
+                        Os.symlink("coreutils", mkdirFile.absolutePath)
+                    } catch (e: Exception) {
+                        coreutils.copyTo(mkdirFile, overwrite = true)
+                    }
+                }
+            }
+            mkdirFile.setReadable(true, false)
+            mkdirFile.setExecutable(true, false)
+            try {
+                Os.chmod(mkdirFile.absolutePath, MODE_755)
+            } catch (e: Exception) {}
+        }
+
+        AvsLogger.d(TAG, "Staged rootfs passed structure verification")
     }
 
     fun cleanupTempFiles() {
