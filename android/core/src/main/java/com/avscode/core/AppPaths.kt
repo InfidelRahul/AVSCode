@@ -31,15 +31,14 @@ class AppPaths(private val context: Context) {
     val guestProjectsPath: String = "/home/user/projects"
     val hostProjectsDir: File get() = File(rootfsDir, "home/user/projects")
 
-    // code-server paths inside guest chroot
-    val guestCodeServerDir: String = "/opt/code-server"
-    val guestCodeServerBin: String = "/opt/code-server/bin/code-server"
-    val guestCodeServerDataDir: String = "/home/user/.local/share/code-server"
-    val hostCodeServerDir: File get() = File(rootfsDir, "opt/code-server")
-    val hostCodeServerDataDir: File get() = File(rootfsDir, "home/user/.local/share/code-server")
+    // VS Code CLI paths inside guest
+    val guestVsCodeCliBin: String = "/usr/local/bin/code"
+    val guestVsCodeDataDir: String = "/home/user/.vscode-cli"
+    val hostVsCodeCliBin: File get() = File(rootfsDir, "usr/local/bin/code")
+    val hostVsCodeDataDir: File get() = File(rootfsDir, "home/user/.vscode-cli")
 
     // Log files
-    val serverLogFile: File get() = File(hostCodeServerDataDir, "code-server.log")
+    val tunnelLogFile: File get() = File(cacheDir, "vscode-tunnel.log")
     val runtimeLogFile: File get() = File(cacheDir, "linux-runtime.log")
 
     // Bootstrap script inside guest rootfs

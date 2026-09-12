@@ -7,14 +7,14 @@
 
 **AVSCode** is a native Android application that runs a complete, persistent Visual Studio Code environment locally on Android devices without requiring root access.
 
-The application embeds an Ubuntu ARM64 Linux userspace powered by **LinuxDroid PRoot**, manages a local **VS Code Server (`code-server`)** instance, and provides an optimized, hardware-accelerated **Android WebView** user interface.
+The application embeds an Ubuntu ARM64 Linux userspace powered by **LinuxDroid PRoot**, manages the official **Microsoft Visual Studio Code CLI (`code tunnel`)**, and provides an optimized, hardware-accelerated **Android WebView** user interface connected to `vscode.dev`.
 
 ---
 
 ## Highlights
 
 - **No Root Required**: Executes fully within user application sandbox using PRoot syscall emulation.
-- **Official VS Code Server**: Runs upstream `code-server` v4.96.4 inside the Linux environment.
+- **Official Microsoft VS Code CLI**: Runs Microsoft's official standalone ARM64 Linux CLI with `code tunnel` inside the Linux environment.
 - **Android 15/16 Ready**: All native binaries (`libproot.so`, `libavscodespawn.so`, etc.) compiled with **16KB page-size alignment** (`-Wl,-z,max-page-size=16384`).
 - **Complete Development Toolchain**: Ubuntu ARM64 userspace with Python 3, Git, Node.js, npm, and apt package manager.
 - **Robust Process Supervision**: Custom JNI process spawner with POSIX process group isolation (`setpgid`) and clean group termination.
@@ -34,8 +34,8 @@ The application embeds an Ubuntu ARM64 Linux userspace powered by **LinuxDroid P
 │   │   MainActivity    │◄───────┤   RuntimeController    │   │
 │   │  (WebView Host)   │ State  │  (Singleton Manager)   │   │
 │   └─────────┬─────────┘        └───────────┬────────────┘   │
-│             │ HTTP                         │ Starts / Stops │
-│             │ 127.0.0.1:8080               ▼                │
+│             │ vscode.dev                   │ Starts / Stops │
+│             │ tunnel URL                   ▼                │
 │             │                  ┌────────────────────────┐   │
 │             │                  │  LinuxRuntimeService   │   │
 │             │                  │  (Foreground Service)  │   │
@@ -59,7 +59,8 @@ The application embeds an Ubuntu ARM64 Linux userspace powered by **LinuxDroid P
 │   ┌──────────────────────────▼──────────────────────────┐   │
 │   │              Ubuntu ARM64 Userspace                 │   │
 │   │  - /bin/bash, Python 3, Git                         │   │
-│   │  - /opt/code-server (v4.96.4 web server)            │   │
+│   │  - /usr/local/bin/code (Microsoft VS Code CLI)      │   │
+│   │  - code tunnel -> vscode.dev endpoint               │   │
 │   │  - /home/user/projects (Workspaces)                 │   │
 │   └─────────────────────────────────────────────────────┘   │
 └─────────────────────────────────────────────────────────────┘
@@ -160,7 +161,7 @@ AVSCode/
 │   ├── core/                  # AppPaths, AvsLogger, RuntimeState models
 │   ├── runtime/               # PRoot engine, JNI avscode_spawn, LinuxRuntime
 │   ├── rootfs/                # RootfsInstaller (Ubuntu ARM64 base + DNS/APT)
-│   ├── vscode/                # VsCodeServerManager (code-server v4.96.4)
+│   ├── vscode/                # VsCodeCliManager (Microsoft VS Code CLI & Tunnel)
 │   ├── web/                   # VsCodeWebView (Chromium WebView & keyboard bridge)
 │   └── diagnostics/           # RuntimeDiagnostics & health checks
 ├── docs/
@@ -176,5 +177,5 @@ AVSCode/
 
 - **AVSCode**: Apache License 2.0
 - **PRoot**: GPL v2 ([LinuxDroid](https://github.com/LinuxDroidapp/proot))
-- **code-server**: MIT ([Coder](https://github.com/coder/code-server))
+- **VS Code CLI**: Microsoft Corporation ([Visual Studio Code](https://code.visualstudio.com))
 - **Ubuntu Base**: Canonical Ltd.

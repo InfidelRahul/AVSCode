@@ -26,7 +26,11 @@ if [ ! -f "${PROOT_REPO}/CMakeLists.txt" ]; then
     git submodule update --init --recursive
 fi
 
-# 2. Check Android SDK / NDK Environment
+# 2. Check Java / Android SDK / NDK Environment
+if [ -d "/usr/local/sdkman/candidates/java/21.0.12+1-ms" ]; then
+    export JAVA_HOME="/usr/local/sdkman/candidates/java/21.0.12+1-ms"
+fi
+
 if [ -z "${ANDROID_HOME:-}" ] && [ -z "${ANDROID_SDK_ROOT:-}" ]; then
     if [ -f "${ANDROID_DIR}/local.properties" ]; then
         SDK_PROP=$(grep "^sdk.dir=" "${ANDROID_DIR}/local.properties" | cut -d'=' -f2 | sed 's/\\//g')

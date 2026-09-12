@@ -5,7 +5,7 @@ import com.avscode.core.*
 import com.avscode.rootfs.RootfsInstaller
 import com.avscode.runtime.LinuxRuntimeService
 import com.avscode.runtime.PRootRuntime
-import com.avscode.vscode.VsCodeServerManager
+import com.avscode.vscode.VsCodeCliManager
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -17,14 +17,14 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 
 /**
- * Authoritative single runtime controller for AVscode.
+ * Authoritative single runtime controller for AVSCode.
  *
  * Implements the 12-state runtime pipeline:
  * NEEDS_STORAGE_ACCESS -> DOWNLOADING_ROOTFS -> EXTRACTING_ROOTFS -> ROOTFS_READY ->
  * STARTING_LINUX -> VERIFYING_LINUX -> LINUX_READY -> INSTALLING_PACKAGES ->
- * INSTALLING_VSCODE -> STARTING_VSCODE -> READY
+ * INSTALLING_VSCODE -> VSCODE_READY -> STARTING_TUNNEL -> READY
  *
- * Provides resilient CLI access: If VS Code server fails, Linux userspace remains
+ * Provides resilient CLI access: If VS Code CLI/tunnel fails, Linux userspace remains
  * active for terminal troubleshooting.
  */
 class RuntimeController private constructor(private val context: Context) {
@@ -48,7 +48,7 @@ class RuntimeController private constructor(private val context: Context) {
     val paths = AppPaths.getInstance(context)
     val rootfsInstaller = RootfsInstaller(context)
     val linuxRuntime = PRootRuntime(context, rootfsInstaller)
-    val vscodeServer = VsCodeServerManager(context, linuxRuntime)
+    val vscodeCli = VsCodeCliManager(context, linuxRuntime)
 
     private val _appState = MutableStateFlow<AppState>(AppState.NeedsStorageAccess)
     val appState: StateFlow<AppState> = _appState.asStateFlow()
@@ -65,8 +65,8 @@ class RuntimeController private constructor(private val context: Context) {
             _appState.value = AppState.NeedsStorageAccess
         } else if (!rootfsInstaller.isInstalled()) {
             _appState.value = AppState.NotInstalled
-        } else if (vscodeServer.isResponding()) {
-            _appState.value = AppState.Ready(vscodeServer.getServerUrl())
+        } else if (vscodeCli.isTunnelRunning() && vscodeCli.getTunnelUrl() != null) {
+            _appState.value = AppState.Ready(vscodeCli.getTunnelUrl()!!)
         } else {
             _appState.value = AppState.RootfsReady
         }
@@ -85,7 +85,7 @@ class RuntimeController private constructor(private val context: Context) {
     suspend fun startAll(forceRestart: Boolean = false): Result<String> = mutex.withLock {
         withContext(Dispatchers.IO) {
             val currentState = _appState.value
-            if (!forceRestart && currentState is AppState.Ready && vscodeServer.isResponding()) {
+            if (!forceRestart && currentState is AppState.Ready && vscodeCli.isTunnelRunning()) {
                 AvsLogger.i(TAG, "Runtime already ready at ${currentState.url}")
                 return@withContext Result.Success(currentState.url)
             }
@@ -161,7 +161,7 @@ class RuntimeController private constructor(private val context: Context) {
                 _appState.value = AppState.InstallingPackages("Configuring guest development tools...")
                 emitLog("[Packages] Running Linux guest bootstrap script (/usr/local/lib/avscode/bootstrap.sh)...")
                 try {
-                    vscodeServer.ensureBootstrap { line ->
+                    vscodeCli.ensureBootstrap { line ->
                         emitLog(line)
                     }.getOrThrow()
                     emitLog("[Packages] Development packages installed successfully.")
@@ -175,40 +175,50 @@ class RuntimeController private constructor(private val context: Context) {
                 emitLog("[Packages] Development environment already bootstrapped.")
             }
 
-            // Step 5: Install VS Code Server inside guest if needed
-            if (!vscodeServer.isInstalled()) {
-                _appState.value = AppState.InstallingVsCode(0f, "Installing VS Code Server (code-server)...")
-                emitLog("[VS Code] Installing code-server inside Linux userspace...")
+            // Step 5: Install Microsoft VS Code CLI inside guest if needed
+            if (!vscodeCli.isInstalled()) {
+                _appState.value = AppState.InstallingVsCode(0f, "Installing Microsoft VS Code CLI...")
+                emitLog("[VS Code] Installing Microsoft VS Code CLI into Ubuntu userspace (/usr/local/bin/code)...")
                 try {
-                    vscodeServer.install { progress, status ->
+                    vscodeCli.install { progress, status ->
                         _appState.value = AppState.InstallingVsCode(progress, status)
                         emitLog(status)
                     }.getOrThrow()
-                    emitLog("[VS Code] code-server installed and verified.")
+                    _appState.value = AppState.VsCodeReady
+                    emitLog("[VS Code] Microsoft VS Code CLI installed and verified.")
                 } catch (e: Throwable) {
-                    _appState.value = AppState.VsCodeFailed("VS Code installation failed: ${e.message}", e)
+                    _appState.value = AppState.VsCodeFailed("VS Code CLI installation failed: ${e.message}", e)
                     emitLog("[VS Code] INSTALLATION FAILED: ${e.message}")
                     // Linux userspace remains running for CLI debugging
                     return@withContext Result.Failure(e)
                 }
             } else {
-                emitLog("[VS Code] code-server already installed.")
+                emitLog("[VS Code] Microsoft VS Code CLI already installed.")
+                _appState.value = AppState.VsCodeReady
             }
 
-            // Step 6: Start VS Code Server & await HTTP readiness
-            _appState.value = AppState.StartingVsCode
-            emitLog("[VS Code] Starting server process on 127.0.0.1:8080...")
+            // Step 6: Start Microsoft VS Code Tunnel inside Linux userspace
+            _appState.value = AppState.StartingTunnel("Starting VS Code Tunnel...")
+            emitLog("[VS Code] Starting Microsoft VS Code Tunnel inside Linux userspace...")
             try {
-                vscodeServer.start { line ->
-                    emitLog(line)
-                }.getOrThrow()
-                val url = vscodeServer.getServerUrl()
-                _appState.value = AppState.Ready(url)
-                emitLog("[VS Code] Server ready at $url. Launching editor interface.")
-                Result.Success(url)
+                val tunnelUrl = vscodeCli.startTunnel(
+                    tunnelName = "avscode",
+                    onLog = { line -> emitLog(line) },
+                    onAuthRequired = { authUrl, code ->
+                        _appState.value = AppState.TunnelAuthenticationRequired(authUrl, code)
+                        emitLog("[VS Code] AUTHENTICATION REQUIRED: Visit $authUrl and enter code: ${code ?: "see terminal"}")
+                    },
+                    onTunnelReady = { url ->
+                        emitLog("[VS Code] Tunnel endpoint established: $url")
+                    }
+                ).getOrThrow()
+
+                _appState.value = AppState.Ready(tunnelUrl)
+                emitLog("[VS Code] VS Code Tunnel ready at $tunnelUrl. Launching editor interface.")
+                Result.Success(tunnelUrl)
             } catch (e: Throwable) {
-                _appState.value = AppState.VsCodeFailed("VS Code failed to start: ${e.message}", e)
-                emitLog("[VS Code] START FAILED: ${e.message}")
+                _appState.value = AppState.VsCodeFailed("VS Code Tunnel failed to start: ${e.message}", e)
+                emitLog("[VS Code] TUNNEL START FAILED: ${e.message}")
                 // Linux userspace remains running for CLI debugging
                 Result.Failure(e)
             }
@@ -224,14 +234,14 @@ class RuntimeController private constructor(private val context: Context) {
     }
 
     /**
-     * Gracefully stops VS Code Server, Linux runtime, and foreground service.
+     * Gracefully stops VS Code Tunnel, Linux runtime, and foreground service.
      */
     suspend fun stopAll(): Result<Unit> = mutex.withLock {
         withContext(Dispatchers.IO) {
             _appState.value = AppState.Stopping
             emitLog("[Runtime] Stopping all services...")
             runCatchingResult {
-                vscodeServer.stop()
+                vscodeCli.stopTunnel()
                 linuxRuntime.stop()
                 LinuxRuntimeService.stop(context)
                 updateInitialState()

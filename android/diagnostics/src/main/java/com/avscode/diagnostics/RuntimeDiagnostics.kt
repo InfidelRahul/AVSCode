@@ -60,7 +60,7 @@ object RuntimeDiagnostics {
         val internalDir = context?.filesDir ?: File("/data/data/com.avscode/files")
         val appFilesDir = internalDir
         val rootfsDir = paths?.rootfsDir ?: File(appFilesDir, "ubuntu-rootfs")
-        val codeServerDir = paths?.hostCodeServerDir ?: File(rootfsDir, "opt/code-server")
+        val vsCodeCliBinary = paths?.hostVsCodeCliBin ?: File(rootfsDir, "usr/local/bin/code")
 
         return StorageInfo(
             externalStorageTotal = externalDir.totalSpace,
@@ -71,7 +71,7 @@ object RuntimeDiagnostics {
             appFilesDirExists = appFilesDir.exists(),
             appFilesDirCanWrite = appFilesDir.canWrite(),
             rootfsInstalled = paths?.rootfsInstallMarker?.exists() ?: File(rootfsDir, ".installed").exists(),
-            codeServerInstalled = File(codeServerDir, "bin/code-server").exists()
+            vsCodeCliInstalled = vsCodeCliBinary.exists()
         )
     }
 
@@ -142,17 +142,17 @@ object RuntimeDiagnostics {
     }
 
     private fun collectVsCodeInfo(paths: AppPaths?): VsCodeInfo {
-        val codeServerDir = paths?.hostCodeServerDir ?: File("/data/data/com.avscode/files/ubuntu-rootfs/opt/code-server")
-        val codeServerBinary = File(codeServerDir, "bin/code-server")
-        val userDataDir = paths?.hostCodeServerDataDir ?: File("/data/data/com.avscode/files/ubuntu-rootfs/home/user/.local/share/code-server")
+        val rootfsDir = paths?.rootfsDir ?: File("/data/data/com.avscode/files/ubuntu-rootfs")
+        val cliBinary = paths?.hostVsCodeCliBin ?: File(rootfsDir, "usr/local/bin/code")
+        val userDataDir = paths?.hostVsCodeDataDir ?: File(rootfsDir, "home/user/.vscode-cli")
 
         return VsCodeInfo(
-            installed = codeServerBinary.exists(),
-            binaryExists = codeServerBinary.exists(),
-            binaryCanExecute = codeServerBinary.canExecute(),
+            installed = cliBinary.exists(),
+            binaryExists = cliBinary.exists(),
+            binaryCanExecute = cliBinary.canExecute(),
             userDataDirExists = userDataDir.exists(),
-            installPath = codeServerDir.absolutePath,
-            version = "4.96.4"
+            installPath = cliBinary.absolutePath,
+            version = "Microsoft VS Code CLI"
         )
     }
 
@@ -216,7 +216,7 @@ object RuntimeDiagnostics {
         sb.appendLine("App Files Dir Exists: ${report.storageInfo.appFilesDirExists}")
         sb.appendLine("App Files Dir Writable: ${report.storageInfo.appFilesDirCanWrite}")
         sb.appendLine("Rootfs Installed: ${report.storageInfo.rootfsInstalled}")
-        sb.appendLine("Code-Server Installed: ${report.storageInfo.codeServerInstalled}")
+        sb.appendLine("VS Code CLI Installed: ${report.storageInfo.vsCodeCliInstalled}")
         sb.appendLine()
 
         sb.appendLine("--- Rootfs Info ---")
@@ -319,8 +319,10 @@ data class StorageInfo(
     val appFilesDirExists: Boolean,
     val appFilesDirCanWrite: Boolean,
     val rootfsInstalled: Boolean,
-    val codeServerInstalled: Boolean
-)
+    val vsCodeCliInstalled: Boolean
+) {
+    val codeServerInstalled: Boolean get() = vsCodeCliInstalled
+}
 
 data class RootfsInfo(
     val installed: Boolean,

@@ -1,6 +1,6 @@
 # AVSCode Architecture & Technical Specification
 
-AVSCode runs full Visual Studio Code (via `code-server`) locally on Android devices without requiring root access. The host Android application serves the Web UI through a hardware-accelerated Android WebView, while all computation, filesystem operations, compiler toolchains, and language servers execute in a self-contained ARM64 Linux userspace managed via PRoot.
+AVSCode runs full Visual Studio Code (via Microsoft's official VS Code CLI and VS Code Tunnel architecture) locally on Android devices without requiring root access. The host Android application serves the Web UI through a hardware-accelerated Android WebView connected to `vscode.dev`, while all computation, filesystem operations, compiler toolchains, and language servers execute in a self-contained ARM64 Linux userspace managed via PRoot.
 
 ---
 
@@ -15,16 +15,16 @@ AVSCode runs full Visual Studio Code (via `code-server`) locally on Android devi
 │   │  (WebView Host)   │ State  │  (Singleton Manager)   │   │
 │   └─────────┬─────────┘        └───────────┬────────────┘   │
 │             │                              │                │
-│             │ HTTP                         │ Starts / Stops │
-│             │ 127.0.0.1:8080               ▼                │
+│             │ vscode.dev                   │ Starts / Stops │
+│             │ tunnel URL                   ▼                │
 │             │                  ┌────────────────────────┐   │
 │             │                  │  LinuxRuntimeService   │   │
 │             │                  │  (Foreground Service)  │   │
-│             ▼                  └───────────┬────────────┘   │
-│   ┌───────────────────┐                    │                │
-│   │   VsCodeWebView   │                    │ Spawns JNI     │
-│   └───────────────────┘                    ▼                │
-│                                ┌────────────────────────┐   │
+│             │                  └───────────┬────────────┘   │
+│             ▼                              │                │
+│   ┌───────────────────┐                    │ Spawns JNI     │
+│   │   VsCodeWebView   │                    ▼                │
+│   └───────────────────┘        ┌────────────────────────┐   │
 │                                │   NativeSpawn (JNI)    │   │
 │                                │    (avscode_spawn)     │   │
 │                                └───────────┬────────────┘   │
@@ -45,8 +45,8 @@ AVSCode runs full Visual Studio Code (via `code-server`) locally on Android devi
 │   ┌──────────────────────────▼──────────────────────────┐   │
 │   │              Ubuntu ARM64 Userspace                 │   │
 │   │  - /bin/bash, /usr/bin/python3, /usr/bin/git        │   │
-│   │  - /usr/bin/node & npm (symlinked from code-server) │   │
-│   │  - /opt/code-server (v4.96.4 web server)            │   │
+│   │  - /usr/local/bin/code (Microsoft VS Code CLI)      │   │
+│   │  - code tunnel -> vscode.dev endpoint               │   │
 │   │  - /home/user/projects (Persistent user workspaces) │   │
 │   └─────────────────────────────────────────────────────┘   │
 └─────────────────────────────────────────────────────────────┘
@@ -61,17 +61,20 @@ AVSCode runs full Visual Studio Code (via `code-server`) locally on Android devi
 - **`RuntimeController` (`com.avscode.RuntimeController`)**:
   - Authoritative, thread-safe singleton state machine.
   - Coordinates the multi-step boot process:
-    1. Rootfs verification & atomic staging extraction.
-    2. Linux userspace initialization & PRoot carrier discovery.
-    3. One-time development tool bootstrap (git, python3, certificates).
-    4. Code-server startup and HTTP readiness probing.
-    5. State transition to `AppState.Ready(url)` for WebView consumption.
+    1. Rootfs verification & extraction.
+    2. Linux userspace initialization & PRoot supervisor session.
+    3. Linux userspace diagnostic probe (`/usr/bin/mkdir`).
+    4. One-time guest development tool bootstrap (`bootstrap.sh`).
+    5. Microsoft VS Code CLI verification & installation (`/usr/local/bin/code`).
+    6. `code tunnel` process supervision & dynamic URL detection.
+    7. State transition to `AppState.Ready(url)` for WebView consumption.
 - **`LinuxRuntimeService` (`com.avscode.runtime.LinuxRuntimeService`)**:
   - Android Foreground Service with type `FOREGROUND_SERVICE_TYPE_DATA_SYNC`.
-  - Holds a wake lock and displays ongoing status notifications to prevent Android OOM kills while long-running build or language server tasks run in the background.
+  - Holds a wake lock and displays ongoing status notifications to prevent Android OOM kills while long-running compilation or tunnel connections run in the background.
 - **`MainActivity` (`com.avscode.MainActivity`)**:
   - Pure view controller that observes `RuntimeController.appState`.
   - Handles fullscreen display, back button dispatch via `OnBackPressedDispatcher`, and hardware keyboard shortcut pass-through to the WebView.
+  - Manages dedicated interactive Terminal view and device login authorization prompts.
 
 ---
 
@@ -95,32 +98,33 @@ AVSCode runs full Visual Studio Code (via `code-server`) locally on Android devi
 
 - **Rootfs Provisioning (`RootfsInstaller.kt`)**:
   - Official Ubuntu ARM64 base filesystem archive.
-  - Extracted to an isolated staging directory (`ubuntu-rootfs-staging`) with automated verification of critical binaries (`/bin/bash`, `/bin/sh`, `/etc/passwd`).
-  - Provides a pure Kotlin fallback streaming tar/gzip extractor for environments where host utilities are unavailable.
-  - Promotes staging atomically (`renameTo`) once verified.
+  - Extracted using Apache Commons Compress with POSIX PAX header filtering and deferred hardlink resolution.
+  - Structural and binary verification of critical paths (`/bin/bash`, `/bin/sh`, `/etc/passwd`, `/etc/os-release`).
+  - Promotes staging atomically once verified.
 - **Guest Configuration**:
-  - Preconfigures DNS in `/etc/resolv.conf` using reliable public resolvers (`1.1.1.1`, `8.8.8.8`).
+  - Preconfigures DNS in `/etc/resolv.conf` using reliable public resolvers (`1.1.1.1`, `8.8.8.8`, `8.8.4.4`).
   - Sets up default user environment (`user` with UID 1000).
-  - Automatically links bundled Node.js and npm binaries to `/usr/bin/node` and `/usr/bin/npm`.
+  - Deploys `/usr/sbin/policy-rc.d` (`exit 101`) to prevent service daemon errors during `apt` in PRoot.
 
 ---
 
-### 4. VS Code Server (`VsCodeServerManager.kt`)
+### 4. Microsoft VS Code CLI & Tunnel (`VsCodeCliManager.kt`)
 
 - **Binary Distribution**:
-  - Upstream official release: `code-server-4.96.4-linux-arm64.tar.gz`.
-  - Installed in guest directory `/opt/code-server`.
+  - Official Microsoft standalone ARM64 Linux CLI release (`cli-alpine-arm64`).
+  - Installed into Ubuntu userspace at `/usr/local/bin/code`.
 - **Launch Configuration**:
-  - Executed inside PRoot:
+  - Executed inside PRoot as `user`:
     ```bash
-    /opt/code-server/bin/code-server \
-      --bind-addr 127.0.0.1:8080 \
-      --auth none \
-      --user-data-dir /home/user/.local/share/code-server \
-      /home/user/projects
+    code tunnel \
+      --accept-server-license-terms \
+      --cli-data-dir /home/user/.vscode-cli \
+      --user-data-dir /home/user/.vscode-cli/data \
+      --name avscode
     ```
-- **Readiness Polling**:
-  - Uses asynchronous HTTP/socket polling against `http://127.0.0.1:8080/` before transitioning application state to `AppState.Ready`.
+- **Connection & Authentication**:
+  - Detects device code authentication prompts (`https://github.com/login/device`) and presents them in the Android UI.
+  - Dynamically parses the generated `https://vscode.dev/tunnel/<name>/...` connection URL from process stdout and loads it directly into the WebView.
 
 ---
 
@@ -128,4 +132,3 @@ AVSCode runs full Visual Studio Code (via `code-server`) locally on Android devi
 
 - Uses Chromium-based Android `WebView` with hardware acceleration enabled.
 - Configured with `DOM_STORAGE_ENABLED`, `DATABASE_ENABLED`, and `JAVASCRIPT_ENABLED`.
-- Supports desktop-mode rendering and keyboard event interception to ensure standard IDE shortcuts (e.g., Ctrl+S, Ctrl+P, Ctrl+Shift+F) are routed directly into the web editor.

@@ -568,7 +568,7 @@ class RootfsInstaller(private val context: Context) {
         if (!userProfile.exists()) {
             userProfile.writeText(
                 """
-                export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/opt/code-server/bin
+                export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
                 export SHELL=/bin/bash
                 export LANG=C.UTF-8
                 """.trimIndent() + "\n"
@@ -676,14 +676,14 @@ class RootfsInstaller(private val context: Context) {
             |if ! id -u user >/dev/null 2>&1; then
             |    useradd -m -s /bin/bash user || true
             |fi
-            |mkdir -p /home/user/projects /home/user/.local/share/code-server /tmp
+            |mkdir -p /home/user/projects /home/user/.vscode-cli /tmp
             |chmod 1777 /tmp
             |chown -R user:user /home/user || true
             |chmod 755 /home/user
             |
             |if [ ! -f /home/user/.profile ]; then
             |    cat <<'EOF' > /home/user/.profile
-            |export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/opt/code-server/bin
+            |export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
             |export SHELL=/bin/bash
             |export LANG=C.UTF-8
             |EOF

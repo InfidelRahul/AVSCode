@@ -86,10 +86,10 @@ class DiagnosticManager(private val context: Context) {
             }
         }
 
-        // Check code-server
+        // Check VS Code CLI
         if (report.vscodeInfo.installed) {
             if (!report.vscodeInfo.binaryExists) {
-                issues.add("CRITICAL: code-server binary missing")
+                issues.add("CRITICAL: VS Code CLI binary missing")
                 criticalIssues++
             }
         }

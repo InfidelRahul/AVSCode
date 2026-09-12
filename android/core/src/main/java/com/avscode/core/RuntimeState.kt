@@ -34,6 +34,9 @@ sealed class AppState {
     object LinuxReady : AppState()
     data class InstallingPackages(val status: String) : AppState()
     data class InstallingVsCode(val progress: Float, val status: String) : AppState()
+    object VsCodeReady : AppState()
+    data class StartingTunnel(val status: String) : AppState()
+    data class TunnelAuthenticationRequired(val authUrl: String, val code: String?) : AppState()
     object StartingVsCode : AppState()
     data class Ready(val url: String) : AppState()
     object Stopping : AppState()
@@ -52,7 +55,7 @@ sealed class AppState {
 
     val isReady: Boolean get() = this is Ready
     val isFailed: Boolean get() = this is Failed || this is RootfsFailed || this is LinuxFailed || this is PackageInstallFailed || this is VsCodeFailed
-    val canAccessCli: Boolean get() = this is LinuxReady || this is InstallingPackages || this is InstallingVsCode || this is StartingVsCode || this is Ready || this is VsCodeFailed
+    val canAccessCli: Boolean get() = this is LinuxReady || this is InstallingPackages || this is InstallingVsCode || this is VsCodeReady || this is StartingTunnel || this is TunnelAuthenticationRequired || this is StartingVsCode || this is Ready || this is VsCodeFailed
 }
 
 /**

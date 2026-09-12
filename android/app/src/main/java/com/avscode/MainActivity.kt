@@ -1,5 +1,8 @@
 package com.avscode
 
+import android.content.ClipData
+import android.content.ClipboardManager
+import android.content.Context
 import android.content.Intent
 import android.net.Uri
 import android.os.Build
@@ -273,9 +276,40 @@ class MainActivity : AppCompatActivity() {
                         progressBar.visibility = View.VISIBLE
                         progressBar.progress = (state.progress * 100).toInt()
                     }
+                    is AppState.VsCodeReady -> {
+                        statusBadge.text = "VSCODE_READY"
+                        statusHeadline.text = "Microsoft VS Code CLI ready."
+                        progressBar.visibility = View.GONE
+                    }
+                    is AppState.StartingTunnel -> {
+                        statusBadge.text = "STARTING_TUNNEL"
+                        statusHeadline.text = state.status
+                        progressBar.visibility = View.GONE
+                    }
+                    is AppState.TunnelAuthenticationRequired -> {
+                        statusBadge.text = "TUNNEL_AUTH_REQUIRED"
+                        val codeMsg = state.code?.let { "Code: $it" } ?: "See terminal for code"
+                        statusHeadline.text = "Authentication required ($codeMsg). Visit ${state.authUrl}"
+                        progressBar.visibility = View.GONE
+                        terminalContainer.visibility = View.VISIBLE
+
+                        // Copy code to clipboard and open browser
+                        state.code?.let { authCode ->
+                            val clipboard = getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager
+                            clipboard?.setPrimaryClip(ClipData.newPlainText("VS Code Tunnel Code", authCode))
+                            Toast.makeText(this@MainActivity, "Auth code copied: $authCode", Toast.LENGTH_LONG).show()
+                        }
+
+                        try {
+                            val browserIntent = Intent(Intent.ACTION_VIEW, Uri.parse(state.authUrl))
+                            startActivity(browserIntent)
+                        } catch (e: Exception) {
+                            AvsLogger.w(TAG, "Failed to open browser for auth: ${e.message}")
+                        }
+                    }
                     is AppState.StartingVsCode -> {
                         statusBadge.text = "STARTING_VSCODE"
-                        statusHeadline.text = "Starting VS Code Server on port 8080..."
+                        statusHeadline.text = "Starting VS Code..."
                         progressBar.visibility = View.GONE
                     }
                     is AppState.Ready -> {
