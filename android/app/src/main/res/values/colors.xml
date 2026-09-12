@@ -19,4 +19,12 @@
     <color name="badge_text">#0D47A1</color>
     <color name="success_color">#2E7D32</color>
     <color name="error_color">#C62828</color>
+
+    <!-- Adaptive Launcher Icon (Light Mode Tuned) -->
+    <color name="ic_launcher_background">#F8FAFC</color>
+    <color name="ic_launcher_blade_top">#0065A9</color>
+    <color name="ic_launcher_blade_bottom">#007ACC</color>
+    <color name="ic_launcher_ribbon_lower">#1F9CF0</color>
+    <color name="ic_launcher_ribbon_upper">#38B3FF</color>
+    <color name="ic_launcher_chevron_back">#005B99</color>
 </resources>
