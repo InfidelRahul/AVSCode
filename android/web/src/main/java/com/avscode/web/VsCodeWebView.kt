@@ -77,6 +77,11 @@ class VsCodeWebView(private val context: Context) {
                 }
             }
 
+            // Ensure CookieManager preserves cookies and session credentials across restarts
+            val cookieManager = CookieManager.getInstance()
+            cookieManager.setAcceptCookie(true)
+            cookieManager.setAcceptThirdPartyCookies(this, true)
+
             webViewClient = object : WebViewClient() {
                 override fun onPageStarted(view: WebView?, url: String?, favicon: Bitmap?) {
                     super.onPageStarted(view, url, favicon)
@@ -91,6 +96,7 @@ class VsCodeWebView(private val context: Context) {
                     isReady = true
                     injectViewportOverride(view)
                     applyZoom()
+                    CookieManager.getInstance().flush()
                     onLoadingStateChanged?.invoke(false)
                 }
 
@@ -212,11 +218,13 @@ class VsCodeWebView(private val context: Context) {
     }
 
     fun onPause() {
+        CookieManager.getInstance().flush()
         webView?.onPause()
     }
 
     fun destroy() {
         AvsLogger.d(TAG, "Destroying WebView")
+        CookieManager.getInstance().flush()
         webView?.stopLoading()
         webView?.destroy()
         webView = null
@@ -240,6 +248,7 @@ class VsCodeWebView(private val context: Context) {
      */
     fun restoreEditor() {
         inAuthFlow = false
+        CookieManager.getInstance().flush()
         val target = editorUrl ?: serverPort?.let { "http://127.0.0.1:$it/?folder=/home/user/projects" }
         if (target != null) {
             AvsLogger.i(TAG, "Restoring VS Code editor in WebView: $target")

@@ -43,18 +43,25 @@ class VsCodeCliManager(
         const val GUEST_DATA_DIR = "/home/user/.vscode-cli"
         const val GUEST_PROJECTS_DIR = "/home/user/projects"
 
-        // Default local host binding
+        // Default local host binding & persistent port (preserves origin localStorage/cookies)
         const val DEFAULT_SERVER_HOST = "127.0.0.1"
+        const val DEFAULT_PREFERRED_PORT = 33000
 
         // Timeouts & intervals
         const val STARTUP_TIMEOUT_MS = 60_000L
         const val PROBE_INTERVAL_MS = 500L
 
         /**
-         * Finds an ephemeral available TCP port on local loopback.
+         * Finds an available TCP port on local loopback.
+         * Prefers [preferredPort] to preserve web origin storage (cookies, localStorage, SecretStorage)
+         * across restarts, only falling back to an ephemeral port if the preferred port is occupied.
          */
-        fun findAvailablePort(): Int {
-            return ServerSocket(0).use { it.localPort }
+        fun findAvailablePort(preferredPort: Int = DEFAULT_PREFERRED_PORT): Int {
+            return try {
+                ServerSocket(preferredPort).use { it.localPort }
+            } catch (e: Exception) {
+                ServerSocket(0).use { it.localPort }
+            }
         }
 
         /**
@@ -311,7 +318,7 @@ class VsCodeCliManager(
             // Cleanup stale processes before starting
             cleanStaleProcesses()
 
-            val selectedPort = serverPort ?: findAvailablePort()
+            val selectedPort = serverPort ?: findAvailablePort(DEFAULT_PREFERRED_PORT)
             this@VsCodeCliManager.serverPort = selectedPort
 
             AvsLogger.i(TAG, "Starting local VS Code Server on 127.0.0.1:$selectedPort")

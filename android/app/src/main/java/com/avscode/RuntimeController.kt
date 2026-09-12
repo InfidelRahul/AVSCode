@@ -225,7 +225,7 @@ class RuntimeController private constructor(private val context: Context) {
             emitLog("[VS Code] Starting local VS Code Server (code serve-web) inside Linux userspace...")
             try {
                 val serverUrl = vscodeCli.startServer(
-                    serverPort = null, // Dynamically allocate ephemeral port
+                    serverPort = null, // Prefers persistent port (33000) to preserve browser origin storage/auth
                     onLog = { line -> emitLog(line) },
                     onServerReady = { url ->
                         emitLog("[VS Code] Local server reachable: $url")

@@ -13,6 +13,7 @@ import android.view.KeyEvent
 import android.view.View
 import android.view.ViewGroup
 import android.view.inputmethod.EditorInfo
+import android.webkit.CookieManager
 import android.webkit.WebResourceError
 import android.webkit.WebResourceRequest
 import android.webkit.WebSettings
@@ -338,6 +339,7 @@ class MainActivity : AppCompatActivity() {
             }
         }
 
+        CookieManager.getInstance().flush()
         runOnUiThread {
             Toast.makeText(this, "AVSCode: Authentication complete!", Toast.LENGTH_SHORT).show()
         }
@@ -766,6 +768,9 @@ class MainActivity : AppCompatActivity() {
                     mixedContentMode = WebSettings.MIXED_CONTENT_ALWAYS_ALLOW
                     cacheMode = WebSettings.LOAD_DEFAULT
                 }
+                val cookieManager = CookieManager.getInstance()
+                cookieManager.setAcceptCookie(true)
+                cookieManager.setAcceptThirdPartyCookies(this, true)
                 webViewClient = object : WebViewClient() {
                     override fun shouldOverrideUrlLoading(view: WebView?, request: WebResourceRequest?): Boolean {
                         val uri = request?.url ?: return false
