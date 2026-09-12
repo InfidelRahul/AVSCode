@@ -186,16 +186,34 @@
                         android:indeterminate="true"
                         android:visibility="gone" />
 
-                    <com.google.android.material.button.MaterialButton
-                        android:id="@+id/btn_vscode_action"
+                    <LinearLayout
                         android:layout_width="match_parent"
-                        android:layout_height="48dp"
+                        android:layout_height="wrap_content"
                         android:layout_marginTop="14dp"
-                        android:text="@string/start_vscode"
-                        android:textSize="14sp"
-                        app:cornerRadius="10dp"
-                        app:icon="@drawable/ic_play_arrow"
-                        app:iconGravity="textStart" />
+                        android:orientation="horizontal">
+
+                        <com.google.android.material.button.MaterialButton
+                            android:id="@+id/btn_vscode_action"
+                            android:layout_width="0dp"
+                            android:layout_height="48dp"
+                            android:layout_weight="1"
+                            android:text="@string/start_vscode"
+                            android:textSize="14sp"
+                            app:cornerRadius="10dp"
+                            app:icon="@drawable/ic_play_arrow"
+                            app:iconGravity="textStart" />
+
+                        <com.google.android.material.button.MaterialButton
+                            android:id="@+id/btn_vscode_stop"
+                            style="@style/Widget.Material3.Button.TonalButton"
+                            android:layout_width="wrap_content"
+                            android:layout_height="48dp"
+                            android:layout_marginStart="8dp"
+                            android:text="@string/stop_vscode"
+                            android:textSize="13sp"
+                            app:cornerRadius="10dp"
+                            android:visibility="gone" />
+                    </LinearLayout>
                 </LinearLayout>
             </com.google.android.material.card.MaterialCardView>
 
@@ -898,6 +916,87 @@
                 android:text="@string/run_command"
                 android:textColor="@color/accent" />
         </LinearLayout>
+    </LinearLayout>
+
+    <!-- ================================================================= -->
+    <!-- 5. DEDICATED IN-APP AUTHENTICATION CONTAINER                      -->
+    <!-- ================================================================= -->
+    <LinearLayout
+        android:id="@+id/auth_container"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:orientation="vertical"
+        android:background="@color/window_background"
+        android:visibility="gone">
+
+        <!-- Top Bar for Authentication Container -->
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="48dp"
+            android:background="@color/surface_color"
+            android:gravity="center_vertical"
+            android:orientation="horizontal"
+            android:paddingHorizontal="8dp">
+
+            <com.google.android.material.button.MaterialButton
+                android:id="@+id/btn_close_auth"
+                style="@style/Widget.Material3.Button.TextButton"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="@string/close"
+                android:textSize="13sp"
+                app:icon="@drawable/ic_arrow_back" />
+
+            <TextView
+                android:id="@+id/tv_auth_title"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:gravity="center"
+                android:text="@string/auth_title"
+                android:textColor="@color/text_primary"
+                android:textSize="14sp"
+                android:textStyle="bold" />
+
+            <View
+                android:layout_width="48dp"
+                android:layout_height="1dp" />
+        </LinearLayout>
+
+        <!-- Auth Success Notice Banner -->
+        <LinearLayout
+            android:id="@+id/auth_success_banner"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:background="@color/badge_background"
+            android:gravity="center_vertical"
+            android:orientation="horizontal"
+            android:paddingHorizontal="16dp"
+            android:paddingVertical="10dp"
+            android:visibility="gone">
+
+            <ImageView
+                android:layout_width="20dp"
+                android:layout_height="20dp"
+                android:contentDescription="Auth success"
+                android:src="@drawable/ic_check_circle" />
+
+            <TextView
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_marginStart="8dp"
+                android:layout_weight="1"
+                android:text="@string/auth_complete_msg"
+                android:textColor="@color/badge_text"
+                android:textSize="13sp" />
+        </LinearLayout>
+
+        <!-- Frame for Auth WebView -->
+        <FrameLayout
+            android:id="@+id/auth_webview_frame"
+            android:layout_width="match_parent"
+            android:layout_height="0dp"
+            android:layout_weight="1" />
     </LinearLayout>
 
 </FrameLayout>

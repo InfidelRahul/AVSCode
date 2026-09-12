@@ -119,8 +119,6 @@ class LinuxRuntimeService : Service() {
                     is AppState.LinuxFailed -> "Linux error: ${state.message}"
                     is AppState.PackageInstallFailed -> "Package error: ${state.message}"
                     is AppState.VsCodeFailed -> "VS Code error: ${state.message}"
-                    is AppState.InstallingRootfs -> "Installing rootfs: ${(state.progress * 100).toInt()}%"
-                    is AppState.Bootstrapping -> state.status
                     is AppState.Failed -> "Linux runtime error: ${state.message}"
                 }
                 updateNotification(text)

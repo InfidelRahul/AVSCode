@@ -4,6 +4,7 @@ import android.content.Context
 import android.os.Build
 import com.avscode.BuildConfig
 import com.avscode.core.AppPaths
+import com.avscode.vscode.VsCodeCliManager
 import java.io.File
 
 data class AboutInfo(
@@ -23,9 +24,9 @@ class AboutInfoProvider(private val context: Context) {
 
     private val appPaths = AppPaths.getInstance(context)
 
-    fun getAboutInfo(): AboutInfo {
+    fun getAboutInfo(dynamicVsCodeVersion: String? = null): AboutInfo {
         val distro = resolveLinuxDistro()
-        val vsCodeVer = resolveVsCodeVersion()
+        val vsCodeVer = dynamicVsCodeVersion ?: resolveVsCodeVersion()
         val device = "${Build.MANUFACTURER.replaceFirstChar { it.uppercase() }} ${Build.MODEL}"
         val cpuArch = Build.SUPPORTED_ABIS.firstOrNull() ?: System.getProperty("os.arch") ?: "arm64-v8a"
         val kernel = System.getProperty("os.version") ?: "Linux"
@@ -44,6 +45,26 @@ class AboutInfoProvider(private val context: Context) {
         )
     }
 
+    suspend fun resolveDynamicVsCodeVersion(cliManager: VsCodeCliManager): String {
+        if (!cliManager.isInstalled()) {
+            return "Not installed"
+        }
+        val queried = cliManager.getCliVersion()
+        if (!queried.isNullOrBlank()) {
+            // Cache queried version
+            try {
+                val versionFile = File(appPaths.rootfsDir, "var/lib/avscode/code-version")
+                versionFile.parentFile?.mkdirs()
+                versionFile.writeText(queried)
+            } catch (ignored: Exception) {}
+            return "$queried (ARM64)"
+        }
+
+        // Fallback to cached version if exists
+        val cached = readCachedVersion()
+        return cached ?: "Unavailable"
+    }
+
     private fun resolveLinuxDistro(): String {
         val osReleaseFile = File(appPaths.rootfsDir, "etc/os-release")
         if (osReleaseFile.exists() && osReleaseFile.canRead()) {
@@ -60,17 +81,23 @@ class AboutInfoProvider(private val context: Context) {
             } catch (ignored: Exception) {
             }
         }
-        return "Ubuntu 26.04 LTS (ARM64)"
+        return if (appPaths.rootfsInstallMarker.exists()) "Ubuntu 26.04 LTS (ARM64)" else "Not installed"
     }
 
     private fun resolveVsCodeVersion(): String {
-        // VS Code CLI default or version file if cached
+        val cliBin = File(appPaths.rootfsDir, "usr/local/bin/code")
+        if (!cliBin.exists()) {
+            return "Not installed"
+        }
+        return readCachedVersion() ?: "Unavailable"
+    }
+
+    private fun readCachedVersion(): String? {
         val versionFile = File(appPaths.rootfsDir, "var/lib/avscode/code-version")
         if (versionFile.exists() && versionFile.canRead()) {
             val text = versionFile.readText().trim()
-            if (text.isNotEmpty()) return text
+            if (text.isNotEmpty()) return "$text (ARM64)"
         }
-        return "VS Code CLI 1.97.2 (ARM64)"
+        return null
     }
 }
-

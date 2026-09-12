@@ -46,10 +46,8 @@ sealed class AppState {
     data class PackageInstallFailed(val message: String, val throwable: Throwable? = null) : AppState()
     data class VsCodeFailed(val message: String, val throwable: Throwable? = null) : AppState()
 
-    // Backwards compatibility aliases
+    // General states
     object NotInstalled : AppState()
-    data class InstallingRootfs(val progress: Float, val status: String) : AppState()
-    data class Bootstrapping(val status: String) : AppState()
     data class Failed(val message: String, val throwable: Throwable? = null) : AppState()
 
     val isReady: Boolean get() = this is Ready

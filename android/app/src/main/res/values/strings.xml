@@ -32,10 +32,15 @@
     <string name="vscode_card_subtitle">Local Web Server &amp; Editor</string>
     <string name="start_vscode">Start VS Code</string>
     <string name="return_to_code">Return to Code</string>
+    <string name="stop_vscode">Stop VS Code</string>
+    <string name="stopping_vscode">Stopping VS Code...</string>
     <string name="vscode_status_stopped">Server stopped</string>
     <string name="vscode_status_running">Server active on %s</string>
     <string name="vscode_status_starting">Starting VS Code server...</string>
+    <string name="vscode_status_stopping">Stopping VS Code server...</string>
     <string name="vscode_status_failed">Failed to start server</string>
+    <string name="auth_title">Authentication</string>
+    <string name="auth_complete_msg">Authentication complete! You may now close this window.</string>
 
     <!-- Terminal Card -->
     <string name="terminal_card_title">Ubuntu Linux Terminal</string>

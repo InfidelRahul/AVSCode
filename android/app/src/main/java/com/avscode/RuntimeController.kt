@@ -79,6 +79,8 @@ class RuntimeController private constructor(private val context: Context) {
             _appState.value = AppState.NotInstalled
         } else if (vscodeCli.isServerRunning() && vscodeCli.getServerUrl() != null) {
             _appState.value = AppState.Ready(vscodeCli.getServerUrl()!!)
+        } else if (vscodeCli.isInstalled()) {
+            _appState.value = AppState.VsCodeReady
         } else {
             _appState.value = AppState.RootfsReady
         }
@@ -209,6 +211,9 @@ class RuntimeController private constructor(private val context: Context) {
                 _appState.value = AppState.VsCodeReady
             }
 
+            // Step 5b: Deploy bundled VS Code extensions (e.g. Monospace Theme)
+            deployBundledExtensions()
+
             // Step 6: Start Android <-> Linux Authentication Bridge
             _appState.value = AppState.StartingAuthBridge("Starting Auth Bridge...")
             val authBridgePort = authBridgeServer.start()
@@ -291,6 +296,36 @@ class RuntimeController private constructor(private val context: Context) {
     }
 
     /**
+     * Deploys and installs bundled VS Code extensions into the guest userspace.
+     * Managed 100% via the Linux VS Code extension architecture (code --install-extension).
+     */
+    private suspend fun deployBundledExtensions() {
+        try {
+            val extensionAssets = context.assets.list("extensions") ?: return
+            if ("monospace-theme-1.0.0.vsix" in extensionAssets) {
+                val marker = File(paths.rootfsDir, "var/lib/avscode/monospace-theme-installed")
+                if (!marker.exists()) {
+                    val guestExtDir = File(paths.rootfsDir, "usr/local/share/avscode/extensions")
+                    guestExtDir.mkdirs()
+                    val targetVsix = File(guestExtDir, "monospace-theme-1.0.0.vsix")
+                    context.assets.open("extensions/monospace-theme-1.0.0.vsix").use { input ->
+                        targetVsix.outputStream().use { output ->
+                            input.copyTo(output)
+                        }
+                    }
+                    emitLog("[Extensions] Installing Monospace Theme VS Code extension...")
+                    vscodeCli.installExtension("/usr/local/share/avscode/extensions/monospace-theme-1.0.0.vsix")
+                    marker.parentFile?.mkdirs()
+                    marker.createNewFile()
+                    emitLog("[Extensions] Monospace Theme extension installed successfully.")
+                }
+            }
+        } catch (e: Exception) {
+            AvsLogger.d(TAG, "Bundled extensions deployment: ${e.message}")
+        }
+    }
+
+    /**
      * Executes the guest-side bootstrap script /usr/local/lib/avscode/bootstrap.sh inside PRoot.
      * Skips immediately if already bootstrapped.
      */
@@ -331,6 +366,82 @@ class RuntimeController private constructor(private val context: Context) {
      */
     suspend fun executeGuestCommand(command: String, onOutput: (String) -> Unit): Result<Int> {
         return linuxRuntime.executeStreaming(command, onOutput)
+    }
+
+    /**
+     * Starts or attaches to the local VS Code Server inside the Linux userspace.
+     * Ensures Linux runtime is active first.
+     */
+    suspend fun startVsCodeServer(): Result<String> = startAll()
+
+    /**
+     * Cleanly stops VS Code Server without killing Linux PRoot or unrelated Linux processes.
+     * Preserves standalone terminal, dev servers, and active guest sessions.
+     */
+    suspend fun stopVsCodeServer(): Result<Unit> = mutex.withLock {
+        withContext(Dispatchers.IO) {
+            _appState.value = AppState.Stopping
+            emitLog("[VS Code] Stopping local VS Code Server...")
+            runCatchingResult {
+                vscodeCli.stopServer()
+                val nextState = if (vscodeCli.isInstalled()) AppState.VsCodeReady else AppState.LinuxReady
+                _appState.value = nextState
+                emitLog("[VS Code] Local VS Code Server stopped cleanly. Linux runtime remains active.")
+            }
+        }
+    }
+
+    /**
+     * Ensures the Linux PRoot runtime and userspace are running for standalone CLI/Terminal.
+     * Does NOT launch VS Code Server or WebView.
+     */
+    suspend fun ensureLinuxStarted(): Result<Unit> = mutex.withLock {
+        withContext(Dispatchers.IO) {
+            if (linuxRuntime.state.value.isRunning && _appState.value.canAccessCli) {
+                return@withContext Result.Success(Unit)
+            }
+            if (!StoragePermissionHelper.isStorageConfigured(context)) {
+                _appState.value = AppState.NeedsStorageAccess
+                return@withContext Result.Failure(IllegalStateException("Storage access not configured"))
+            }
+
+            try {
+                LinuxRuntimeService.start(context)
+            } catch (e: Exception) {
+                AvsLogger.w(TAG, "Failed to start foreground service: ${e.message}")
+            }
+
+            if (!rootfsInstaller.isInstalled()) {
+                emitLog("[Rootfs] Downloading and extracting Ubuntu 26.04 ARM64...")
+                rootfsInstaller.install { progress, status ->
+                    if (progress < 0.50f) {
+                        _appState.value = AppState.DownloadingRootfs(progress / 0.50f, status)
+                    } else {
+                        _appState.value = AppState.ExtractingRootfs((progress - 0.50f) / 0.50f, status)
+                    }
+                    emitLog("[Rootfs] $status")
+                }.getOrThrow()
+                _appState.value = AppState.RootfsReady
+            }
+
+            _appState.value = AppState.StartingLinux
+            emitLog("[Linux] Starting PRoot runtime...")
+            linuxRuntime.start().getOrThrow()
+
+            _appState.value = AppState.VerifyingLinux
+            emitLog("[Linux] Verifying guest userspace diagnostics...")
+            linuxRuntime.verifyGuestUserspace { line -> emitLog(line) }.getOrThrow()
+
+            if (!paths.hostBootstrapMarker.exists()) {
+                _appState.value = AppState.InstallingPackages("Configuring guest development tools...")
+                ensureGuestBootstrap { line -> emitLog(line) }.getOrThrow()
+            }
+
+            val nextState = if (vscodeCli.isInstalled()) AppState.VsCodeReady else AppState.LinuxReady
+            _appState.value = nextState
+            emitLog("[Linux] Standalone Linux environment active. CLI is ready.")
+            Result.Success(Unit)
+        }
     }
 
     /**

@@ -200,6 +200,33 @@ class VsCodeCliManager(
         linuxRuntime.execute(checkCmd)
     }
 
+    /**
+     * Dynamically queries the installed VS Code version inside the guest.
+     * Returns null if VS Code CLI is not installed or command fails.
+     */
+    suspend fun getCliVersion(): String? = withContext(Dispatchers.IO) {
+        if (!isInstalled()) return@withContext null
+        val res = linuxRuntime.execute("code --version 2>/dev/null")
+        if (res.isSuccess) {
+            val firstLine = res.getOrNull()?.lines()?.firstOrNull { it.isNotBlank() }?.trim()
+            if (!firstLine.isNullOrEmpty()) {
+                return@withContext firstLine
+            }
+        }
+        null
+    }
+
+    /**
+     * Installs a VS Code extension (.vsix) inside the Linux userspace using the official CLI.
+     */
+    suspend fun installExtension(guestVsixPath: String): Result<Int> = withContext(Dispatchers.IO) {
+        AvsLogger.i(TAG, "Installing VS Code extension: $guestVsixPath")
+        val cmd = "code --install-extension $guestVsixPath --cli-data-dir $GUEST_DATA_DIR"
+        linuxRuntime.executeStreaming(cmd) { line ->
+            AvsLogger.d(TAG, "[Extension Install] $line")
+        }
+    }
+
     private suspend fun downloadCliArchive(target: File, onProgress: (Float) -> Unit) = withContext(Dispatchers.IO) {
         AvsLogger.i(TAG, "Downloading VS Code CLI from $CLI_DOWNLOAD_URL")
         var currentUrl = CLI_DOWNLOAD_URL

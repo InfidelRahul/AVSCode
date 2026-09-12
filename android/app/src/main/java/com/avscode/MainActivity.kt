@@ -13,6 +13,11 @@ import android.view.KeyEvent
 import android.view.View
 import android.view.ViewGroup
 import android.view.inputmethod.EditorInfo
+import android.webkit.WebResourceError
+import android.webkit.WebResourceRequest
+import android.webkit.WebSettings
+import android.webkit.WebView
+import android.webkit.WebViewClient
 import android.widget.*
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
@@ -72,10 +77,19 @@ class MainActivity : AppCompatActivity() {
     private lateinit var ivVsCodeStatusDot: ImageView
     private lateinit var pbVsCodeStarting: ProgressBar
     private lateinit var btnVsCodeAction: MaterialButton
+    private lateinit var btnVsCodeStop: MaterialButton
 
     // Terminal Card
     private lateinit var cardTerminal: MaterialCardView
     private lateinit var btnOpenTerminal: MaterialButton
+
+    // Dedicated In-App Auth Dialog UI components
+    private lateinit var authContainer: LinearLayout
+    private lateinit var btnCloseAuth: MaterialButton
+    private lateinit var tvAuthTitle: TextView
+    private lateinit var authSuccessBanner: LinearLayout
+    private lateinit var authWebviewFrame: FrameLayout
+    private var authWebView: WebView? = null
 
     // Open Ports Card
     private lateinit var cardPorts: MaterialCardView
@@ -169,17 +183,16 @@ class MainActivity : AppCompatActivity() {
         updateAboutSection()
         updateWorkspaceSummary()
 
-        // Wire up in-app Auth Bridge handler (pure in-app WebView, NO external browser)
+        // Wire up dedicated in-app Auth Dialog (pure in-app WebView, NO external browser)
         runtimeController.onAuthRequestTriggered = { requestId, authUrl, title ->
             runOnUiThread {
                 try {
-                    AvsLogger.i(TAG, "Navigating WebView to auth URL for request $requestId: $authUrl")
+                    AvsLogger.i(TAG, "Opening dedicated in-app Auth Dialog for request $requestId: $authUrl")
                     val msg = title ?: "Authentication requested..."
                     Toast.makeText(this, msg, Toast.LENGTH_SHORT).show()
-                    showEditorView()
-                    webViewManager.loadUrl(authUrl)
+                    showAuthContainer(authUrl, title)
                 } catch (e: Exception) {
-                    AvsLogger.w(TAG, "Failed to load auth URL in WebView for request $requestId: ${e.message}")
+                    AvsLogger.w(TAG, "Failed to load auth URL: ${e.message}")
                 }
             }
         }
@@ -199,6 +212,18 @@ class MainActivity : AppCompatActivity() {
         // Handle system back navigation
         onBackPressedDispatcher.addCallback(this, object : androidx.activity.OnBackPressedCallback(true) {
             override fun handleOnBackPressed() {
+                if (authContainer.visibility == View.VISIBLE) {
+                    if (authWebView?.canGoBack() == true) {
+                        authWebView?.goBack()
+                    } else {
+                        hideAuthContainer()
+                        if (runtimeController.appState.value is AppState.Ready) {
+                            showEditorView()
+                        }
+                    }
+                    return
+                }
+
                 if (editorContainer.visibility == View.VISIBLE) {
                     if (webViewManager.isInAuthFlow()) {
                         webViewManager.cancelAuthAndRestoreEditor()
@@ -304,10 +329,18 @@ class MainActivity : AppCompatActivity() {
         ivVsCodeStatusDot = findViewById(R.id.iv_vscode_status_dot)
         pbVsCodeStarting = findViewById(R.id.pb_vscode_starting)
         btnVsCodeAction = findViewById(R.id.btn_vscode_action)
+        btnVsCodeStop = findViewById(R.id.btn_vscode_stop)
 
         // Terminal Card
         cardTerminal = findViewById(R.id.card_terminal)
         btnOpenTerminal = findViewById(R.id.btn_open_terminal)
+
+        // Dedicated In-App Auth Dialog UI components
+        authContainer = findViewById(R.id.auth_container)
+        btnCloseAuth = findViewById(R.id.btn_close_auth)
+        tvAuthTitle = findViewById(R.id.tv_auth_title)
+        authSuccessBanner = findViewById(R.id.auth_success_banner)
+        authWebviewFrame = findViewById(R.id.auth_webview_frame)
 
         // Open Ports Card
         cardPorts = findViewById(R.id.card_ports)
@@ -366,8 +399,22 @@ class MainActivity : AppCompatActivity() {
             handleVsCodeActionClick()
         }
 
+        btnVsCodeStop.setOnClickListener {
+            handleVsCodeStopClick()
+        }
+
+        btnCloseAuth.setOnClickListener {
+            hideAuthContainer()
+            if (runtimeController.appState.value is AppState.Ready) {
+                showEditorView()
+            }
+        }
+
         btnOpenTerminal.setOnClickListener {
             showTerminalView()
+            lifecycleScope.launch {
+                runtimeController.ensureLinuxStarted()
+            }
         }
 
         btnRefreshPorts.setOnClickListener {
@@ -463,11 +510,20 @@ class MainActivity : AppCompatActivity() {
                 insets.bottom
             )
 
+            // Apply insets to auth container
+            authContainer.setPadding(
+                insets.left,
+                insets.top,
+                insets.right,
+                maxOf(insets.bottom, ime.bottom)
+            )
+
             windowInsets
         }
     }
 
     private fun showDashboardView() {
+        authContainer.visibility = View.GONE
         dashboardContainer.visibility = View.VISIBLE
         installationContainer.visibility = View.GONE
         editorContainer.visibility = View.GONE
@@ -477,6 +533,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun showEditorView() {
+        authContainer.visibility = View.GONE
         val state = runtimeController.appState.value
         val url = if (state is AppState.Ready) state.url else runtimeController.activeServerUrl
         if (url != null) {
@@ -490,6 +547,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun showTerminalView() {
+        authContainer.visibility = View.GONE
         dashboardContainer.visibility = View.GONE
         installationContainer.visibility = View.GONE
         editorContainer.visibility = View.GONE
@@ -498,6 +556,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun showInstallationView(title: String, step: String, progress: Int, isIndeterminate: Boolean = false) {
+        authContainer.visibility = View.GONE
         dashboardContainer.visibility = View.GONE
         installationContainer.visibility = View.VISIBLE
         editorContainer.visibility = View.GONE
@@ -513,6 +572,60 @@ class MainActivity : AppCompatActivity() {
             tvInstallPercent.text = ""
         }
         btnInstallRetry.visibility = View.GONE
+    }
+
+    private fun showAuthContainer(url: String, title: String?) {
+        tvAuthTitle.text = title ?: getString(R.string.auth_title)
+        authSuccessBanner.visibility = View.GONE
+        authContainer.visibility = View.VISIBLE
+
+        if (authWebView == null) {
+            val webView = WebView(this).apply {
+                isFocusable = true
+                isFocusableInTouchMode = true
+                settings.apply {
+                    javaScriptEnabled = true
+                    domStorageEnabled = true
+                    useWideViewPort = true
+                    loadWithOverviewMode = true
+                    mixedContentMode = WebSettings.MIXED_CONTENT_ALWAYS_ALLOW
+                    cacheMode = WebSettings.LOAD_DEFAULT
+                }
+                webViewClient = object : WebViewClient() {
+                    override fun shouldOverrideUrlLoading(view: WebView?, request: WebResourceRequest?): Boolean {
+                        val uri = request?.url ?: return false
+                        AvsLogger.d(TAG, "Auth WebView shouldOverrideUrlLoading: $uri")
+                        if (webViewManager.isAuthBridgeCallback(uri)) {
+                            handleAuthCallbackUri(uri)
+                            authSuccessBanner.visibility = View.VISIBLE
+                            return true
+                        }
+                        return false
+                    }
+
+                    override fun onReceivedError(view: WebView?, request: WebResourceRequest?, error: WebResourceError?) {
+                        super.onReceivedError(view, request, error)
+                        val reqUrl = request?.url
+                        if (reqUrl != null && webViewManager.isAuthBridgeCallback(reqUrl)) {
+                            handleAuthCallbackUri(reqUrl)
+                            authSuccessBanner.visibility = View.VISIBLE
+                        }
+                    }
+                }
+            }
+            authWebView = webView
+            authWebviewFrame.removeAllViews()
+            authWebviewFrame.addView(webView)
+        }
+
+        authWebView?.loadUrl(url)
+    }
+
+    private fun hideAuthContainer() {
+        authContainer.visibility = View.GONE
+        authSuccessBanner.visibility = View.GONE
+        authWebView?.stopLoading()
+        authWebView?.loadUrl("about:blank")
     }
 
     private fun handleGrantStorageAccess() {
@@ -557,9 +670,17 @@ class MainActivity : AppCompatActivity() {
             }
             else -> {
                 lifecycleScope.launch {
-                    runtimeController.startAll()
+                    runtimeController.startVsCodeServer()
                 }
             }
+        }
+    }
+
+    private fun handleVsCodeStopClick() {
+        lifecycleScope.launch {
+            btnVsCodeStop.isEnabled = false
+            btnVsCodeAction.isEnabled = false
+            runtimeController.stopVsCodeServer()
         }
     }
 
@@ -579,6 +700,7 @@ class MainActivity : AppCompatActivity() {
                         btnVsCodeAction.text = getString(R.string.start_vscode)
                         btnVsCodeAction.setIconResource(R.drawable.ic_play_arrow)
                         btnVsCodeAction.isEnabled = true
+                        btnVsCodeStop.visibility = View.GONE
                         pbVsCodeStarting.visibility = View.GONE
                         ivVsCodeStatusDot.visibility = View.GONE
                     }
@@ -606,6 +728,7 @@ class MainActivity : AppCompatActivity() {
                         )
                     }
                     is AppState.StartingLinux -> {
+                        btnVsCodeStop.visibility = View.GONE
                         if (installationContainer.visibility == View.VISIBLE) {
                             showInstallationView(
                                 title = getString(R.string.starting_linux),
@@ -636,6 +759,13 @@ class MainActivity : AppCompatActivity() {
                             showDashboardView()
                         }
                         statusBadge.text = "ONLINE"
+                        tvVsCodeStatusDesc.text = getString(R.string.vscode_status_stopped)
+                        btnVsCodeAction.text = getString(R.string.start_vscode)
+                        btnVsCodeAction.setIconResource(R.drawable.ic_play_arrow)
+                        btnVsCodeAction.isEnabled = true
+                        btnVsCodeStop.visibility = View.GONE
+                        pbVsCodeStarting.visibility = View.GONE
+                        ivVsCodeStatusDot.visibility = View.GONE
                     }
                     is AppState.InstallingPackages -> {
                         showInstallationView(
@@ -657,18 +787,27 @@ class MainActivity : AppCompatActivity() {
                         if (installationContainer.visibility == View.VISIBLE) {
                             showDashboardView()
                         }
+                        tvVsCodeStatusDesc.text = getString(R.string.vscode_status_stopped)
+                        btnVsCodeAction.text = getString(R.string.start_vscode)
+                        btnVsCodeAction.setIconResource(R.drawable.ic_play_arrow)
+                        btnVsCodeAction.isEnabled = true
+                        btnVsCodeStop.visibility = View.GONE
+                        pbVsCodeStarting.visibility = View.GONE
+                        ivVsCodeStatusDot.visibility = View.GONE
                     }
                     is AppState.StartingAuthBridge -> {
                         tvVsCodeStatusDesc.text = "Starting Auth Bridge..."
                         pbVsCodeStarting.visibility = View.VISIBLE
                         btnVsCodeAction.text = "Starting..."
                         btnVsCodeAction.isEnabled = false
+                        btnVsCodeStop.visibility = View.GONE
                     }
                     is AppState.StartingVsCodeServer -> {
                         tvVsCodeStatusDesc.text = getString(R.string.starting_vscode)
                         pbVsCodeStarting.visibility = View.VISIBLE
                         btnVsCodeAction.text = "Starting..."
                         btnVsCodeAction.isEnabled = false
+                        btnVsCodeStop.visibility = View.GONE
                     }
                     is AppState.Ready -> {
                         // Ensure WebView is prepared
@@ -684,6 +823,8 @@ class MainActivity : AppCompatActivity() {
                         btnVsCodeAction.text = getString(R.string.return_to_code)
                         btnVsCodeAction.setIconResource(R.drawable.ic_launch)
                         btnVsCodeAction.isEnabled = true
+                        btnVsCodeStop.visibility = View.VISIBLE
+                        btnVsCodeStop.isEnabled = true
                         statusBadge.text = "READY"
 
                         updatePortsList()
@@ -693,6 +834,14 @@ class MainActivity : AppCompatActivity() {
                             showEditorView()
                         }
                     }
+                    is AppState.Stopping -> {
+                        tvVsCodeStatusDesc.text = getString(R.string.stopping_vscode)
+                        ivVsCodeStatusDot.visibility = View.GONE
+                        pbVsCodeStarting.visibility = View.VISIBLE
+                        btnVsCodeAction.isEnabled = false
+                        btnVsCodeStop.visibility = View.VISIBLE
+                        btnVsCodeStop.isEnabled = false
+                    }
                     is AppState.RootfsFailed -> {
                         showInstallationView(
                             title = "Installation Failed",
@@ -700,6 +849,7 @@ class MainActivity : AppCompatActivity() {
                             progress = 0
                         )
                         btnInstallRetry.visibility = View.VISIBLE
+                        btnVsCodeStop.visibility = View.GONE
                     }
                     is AppState.PackageInstallFailed -> {
                         showInstallationView(
@@ -708,6 +858,7 @@ class MainActivity : AppCompatActivity() {
                             progress = 0
                         )
                         btnInstallRetry.visibility = View.VISIBLE
+                        btnVsCodeStop.visibility = View.GONE
                     }
                     is AppState.VsCodeFailed, is AppState.LinuxFailed, is AppState.Failed -> {
                         showDashboardView()
@@ -722,8 +873,8 @@ class MainActivity : AppCompatActivity() {
                         btnVsCodeAction.text = getString(R.string.retry)
                         btnVsCodeAction.setIconResource(R.drawable.ic_refresh)
                         btnVsCodeAction.isEnabled = true
+                        btnVsCodeStop.visibility = View.GONE
                     }
-                    else -> {}
                 }
             }
         }
@@ -822,6 +973,14 @@ class MainActivity : AppCompatActivity() {
         tvAboutAndroid.text = "${info.androidVersion} (API ${info.sdkInt})"
         tvAboutDevice.text = info.deviceModel
         tvAboutCpu.text = "${info.cpuArch} • ${info.kernelVersion}"
+
+        // Asynchronously query live VS Code CLI version
+        lifecycleScope.launch {
+            val dynamicVer = withContext(Dispatchers.IO) {
+                aboutInfoProvider.resolveDynamicVsCodeVersion(runtimeController.vscodeCli)
+            }
+            tvAboutVsCode.text = dynamicVer
+        }
     }
 
     private fun showSettingsDialog() {
@@ -982,6 +1141,9 @@ class MainActivity : AppCompatActivity() {
 
     override fun onDestroy() {
         AvsLogger.i(TAG, "MainActivity destroyed")
+        authWebView?.stopLoading()
+        authWebView?.destroy()
+        authWebView = null
         webViewManager.destroy()
         webViewAttached = false
         super.onDestroy()
