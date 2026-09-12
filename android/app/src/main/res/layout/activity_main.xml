@@ -771,17 +771,74 @@
                 android:layout_height="wrap_content"
                 android:layout_weight="1"
                 android:gravity="center"
+                android:singleLine="true"
+                android:ellipsize="middle"
                 android:text="@string/vscode_card_title"
                 android:textColor="#cccccc"
-                android:textSize="13sp" />
+                android:textSize="12sp" />
 
+            <!-- Force Zoom Controls -->
+            <LinearLayout
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:gravity="center_vertical"
+                android:orientation="horizontal">
+
+                <com.google.android.material.button.MaterialButton
+                    android:id="@+id/btn_zoom_out"
+                    style="@style/Widget.Material3.Button.TextButton"
+                    android:layout_width="32dp"
+                    android:layout_height="36dp"
+                    android:minWidth="0dp"
+                    android:padding="0dp"
+                    android:text="-"
+                    android:textColor="#ffffff"
+                    android:textSize="16sp"
+                    android:textStyle="bold" />
+
+                <TextView
+                    android:id="@+id/tv_zoom_level"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:paddingHorizontal="4dp"
+                    android:text="100%"
+                    android:fontFamily="monospace"
+                    android:textColor="#ffffff"
+                    android:textSize="11sp" />
+
+                <com.google.android.material.button.MaterialButton
+                    android:id="@+id/btn_zoom_in"
+                    style="@style/Widget.Material3.Button.TextButton"
+                    android:layout_width="32dp"
+                    android:layout_height="36dp"
+                    android:minWidth="0dp"
+                    android:padding="0dp"
+                    android:text="+"
+                    android:textColor="#ffffff"
+                    android:textSize="16sp"
+                    android:textStyle="bold" />
+            </LinearLayout>
+
+            <!-- Desktop Mode Toggle -->
+            <com.google.android.material.button.MaterialButton
+                android:id="@+id/btn_toggle_desktop"
+                style="@style/Widget.Material3.Button.IconButton"
+                android:layout_width="36dp"
+                android:layout_height="36dp"
+                android:contentDescription="@string/desktop_mode"
+                app:icon="@drawable/ic_desktop_windows"
+                app:iconSize="18dp"
+                app:iconTint="@color/accent" />
+
+            <!-- Terminal Shortcut -->
             <com.google.android.material.button.MaterialButton
                 android:id="@+id/btn_editor_to_terminal"
                 style="@style/Widget.Material3.Button.IconButton"
-                android:layout_width="40dp"
-                android:layout_height="40dp"
+                android:layout_width="36dp"
+                android:layout_height="36dp"
                 android:contentDescription="@string/terminal_card_title"
                 app:icon="@drawable/ic_terminal"
+                app:iconSize="18dp"
                 app:iconTint="#ffffff" />
         </LinearLayout>
 
@@ -855,43 +912,223 @@
                 android:visibility="visible" />
         </LinearLayout>
 
-        <!-- Terminal Console ScrollView -->
-        <ScrollView
-            android:id="@+id/terminal_scroll"
+        <!-- Terminal Console Frame (with Scroll Preservation and Floating Scroll Chip) -->
+        <FrameLayout
             android:layout_width="match_parent"
             android:layout_height="0dp"
-            android:layout_weight="1"
-            android:background="#0a0a0a"
-            android:padding="8dp">
+            android:layout_weight="1">
 
-            <TextView
-                android:id="@+id/terminal_output"
+            <ScrollView
+                android:id="@+id/terminal_scroll"
                 android:layout_width="match_parent"
+                android:layout_height="match_parent"
+                android:background="#0a0a0a"
+                android:padding="8dp">
+
+                <TextView
+                    android:id="@+id/terminal_output"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:fontFamily="monospace"
+                    android:text=""
+                    android:textColor="@color/terminal_text"
+                    android:textIsSelectable="true"
+                    android:textSize="12sp" />
+            </ScrollView>
+
+            <com.google.android.material.button.MaterialButton
+                android:id="@+id/btn_scroll_to_bottom"
+                style="@style/Widget.Material3.Button.TonalButton"
+                android:layout_width="wrap_content"
+                android:layout_height="36dp"
+                android:layout_gravity="bottom|center_horizontal"
+                android:layout_marginBottom="12dp"
+                android:text="@string/scroll_to_bottom"
+                android:textSize="12sp"
+                app:cornerRadius="18dp"
+                app:icon="@drawable/ic_keyboard_arrow_down"
+                app:iconSize="16dp"
+                android:visibility="gone" />
+        </FrameLayout>
+
+        <!-- Accessory Keyboard Key Bar for Nano, Bash, and Interactive CLI -->
+        <HorizontalScrollView
+            android:id="@+id/accessory_bar_scroll"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="6dp"
+            android:scrollbars="none">
+
+            <LinearLayout
+                android:id="@+id/accessory_keys_layout"
+                android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
-                android:fontFamily="monospace"
-                android:text="AVSCode PRoot Linux Environment\n"
-                android:textColor="@color/terminal_text"
-                android:textIsSelectable="true"
-                android:textSize="12sp" />
-        </ScrollView>
+                android:gravity="center_vertical"
+                android:orientation="horizontal">
+
+                <com.google.android.material.button.MaterialButton
+                    android:id="@+id/key_esc"
+                    style="@style/Widget.Material3.Button.OutlinedButton"
+                    android:layout_width="wrap_content"
+                    android:layout_height="36dp"
+                    android:layout_marginEnd="4dp"
+                    android:minWidth="0dp"
+                    android:paddingHorizontal="10dp"
+                    android:text="@string/key_esc"
+                    android:textColor="#ffffff"
+                    android:textSize="11sp" />
+
+                <com.google.android.material.button.MaterialButton
+                    android:id="@+id/key_tab"
+                    style="@style/Widget.Material3.Button.OutlinedButton"
+                    android:layout_width="wrap_content"
+                    android:layout_height="36dp"
+                    android:layout_marginEnd="4dp"
+                    android:minWidth="0dp"
+                    android:paddingHorizontal="10dp"
+                    android:text="@string/key_tab"
+                    android:textColor="#ffffff"
+                    android:textSize="11sp" />
+
+                <com.google.android.material.button.MaterialButton
+                    android:id="@+id/key_ctrl"
+                    style="@style/Widget.Material3.Button.OutlinedButton"
+                    android:layout_width="wrap_content"
+                    android:layout_height="36dp"
+                    android:layout_marginEnd="4dp"
+                    android:minWidth="0dp"
+                    android:paddingHorizontal="10dp"
+                    android:text="@string/key_ctrl"
+                    android:textColor="#ffffff"
+                    android:textSize="11sp" />
+
+                <com.google.android.material.button.MaterialButton
+                    android:id="@+id/key_alt"
+                    style="@style/Widget.Material3.Button.OutlinedButton"
+                    android:layout_width="wrap_content"
+                    android:layout_height="36dp"
+                    android:layout_marginEnd="4dp"
+                    android:minWidth="0dp"
+                    android:paddingHorizontal="10dp"
+                    android:text="@string/key_alt"
+                    android:textColor="#ffffff"
+                    android:textSize="11sp" />
+
+                <com.google.android.material.button.MaterialButton
+                    android:id="@+id/key_up"
+                    style="@style/Widget.Material3.Button.OutlinedButton"
+                    android:layout_width="36dp"
+                    android:layout_height="36dp"
+                    android:layout_marginEnd="4dp"
+                    android:minWidth="0dp"
+                    android:padding="0dp"
+                    android:text="↑"
+                    android:textColor="#ffffff"
+                    android:textSize="14sp" />
+
+                <com.google.android.material.button.MaterialButton
+                    android:id="@+id/key_down"
+                    style="@style/Widget.Material3.Button.OutlinedButton"
+                    android:layout_width="36dp"
+                    android:layout_height="36dp"
+                    android:layout_marginEnd="4dp"
+                    android:minWidth="0dp"
+                    android:padding="0dp"
+                    android:text="↓"
+                    android:textColor="#ffffff"
+                    android:textSize="14sp" />
+
+                <com.google.android.material.button.MaterialButton
+                    android:id="@+id/key_left"
+                    style="@style/Widget.Material3.Button.OutlinedButton"
+                    android:layout_width="36dp"
+                    android:layout_height="36dp"
+                    android:layout_marginEnd="4dp"
+                    android:minWidth="0dp"
+                    android:padding="0dp"
+                    android:text="←"
+                    android:textColor="#ffffff"
+                    android:textSize="14sp" />
+
+                <com.google.android.material.button.MaterialButton
+                    android:id="@+id/key_right"
+                    style="@style/Widget.Material3.Button.OutlinedButton"
+                    android:layout_width="36dp"
+                    android:layout_height="36dp"
+                    android:layout_marginEnd="4dp"
+                    android:minWidth="0dp"
+                    android:padding="0dp"
+                    android:text="→"
+                    android:textColor="#ffffff"
+                    android:textSize="14sp" />
+
+                <com.google.android.material.button.MaterialButton
+                    android:id="@+id/key_ctrl_c"
+                    style="@style/Widget.Material3.Button.OutlinedButton"
+                    android:layout_width="wrap_content"
+                    android:layout_height="36dp"
+                    android:layout_marginEnd="4dp"
+                    android:minWidth="0dp"
+                    android:paddingHorizontal="10dp"
+                    android:text="@string/key_ctrl_c"
+                    android:textColor="@color/accent"
+                    android:textSize="11sp" />
+
+                <com.google.android.material.button.MaterialButton
+                    android:id="@+id/key_ctrl_x"
+                    style="@style/Widget.Material3.Button.OutlinedButton"
+                    android:layout_width="wrap_content"
+                    android:layout_height="36dp"
+                    android:layout_marginEnd="4dp"
+                    android:minWidth="0dp"
+                    android:paddingHorizontal="10dp"
+                    android:text="@string/key_ctrl_x"
+                    android:textColor="#ffffff"
+                    android:textSize="11sp" />
+
+                <com.google.android.material.button.MaterialButton
+                    android:id="@+id/key_ctrl_o"
+                    style="@style/Widget.Material3.Button.OutlinedButton"
+                    android:layout_width="wrap_content"
+                    android:layout_height="36dp"
+                    android:layout_marginEnd="4dp"
+                    android:minWidth="0dp"
+                    android:paddingHorizontal="10dp"
+                    android:text="@string/key_ctrl_o"
+                    android:textColor="#ffffff"
+                    android:textSize="11sp" />
+
+                <com.google.android.material.button.MaterialButton
+                    android:id="@+id/key_clear"
+                    style="@style/Widget.Material3.Button.OutlinedButton"
+                    android:layout_width="wrap_content"
+                    android:layout_height="36dp"
+                    android:minWidth="0dp"
+                    android:paddingHorizontal="10dp"
+                    android:text="@string/key_clear"
+                    android:textColor="#aaaaaa"
+                    android:textSize="11sp" />
+            </LinearLayout>
+        </HorizontalScrollView>
 
         <!-- Terminal CLI Input Bar -->
         <LinearLayout
             android:id="@+id/cli_bar"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:layout_marginTop="8dp"
+            android:layout_marginTop="6dp"
             android:gravity="center_vertical"
             android:orientation="horizontal">
 
             <TextView
+                android:id="@+id/tv_cli_prompt"
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
                 android:fontFamily="monospace"
                 android:paddingEnd="6dp"
-                android:text="guest:$"
+                android:text="guest:~$ "
                 android:textColor="@color/terminal_secondary"
-                android:textSize="13sp" />
+                android:textSize="12sp" />
 
             <EditText
                 android:id="@+id/command_input"

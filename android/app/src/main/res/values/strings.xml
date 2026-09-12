@@ -81,4 +81,25 @@
     <string name="settings_title">Settings</string>
     <string name="clear_logs">Clear Server Logs</string>
     <string name="logs_cleared">Logs cleared</string>
+
+    <!-- Zoom & Display Controls -->
+    <string name="zoom_in">Zoom In</string>
+    <string name="zoom_out">Zoom Out</string>
+    <string name="reset_zoom">Reset Zoom</string>
+    <string name="desktop_mode">Desktop Mode</string>
+    <string name="mobile_mode">Mobile Mode</string>
+
+    <!-- Terminal Controls -->
+    <string name="scroll_to_bottom">Scroll to bottom ↓</string>
+    <string name="key_esc">ESC</string>
+    <string name="key_tab">TAB</string>
+    <string name="key_ctrl">CTRL</string>
+    <string name="key_alt">ALT</string>
+    <string name="key_ctrl_c">^C</string>
+    <string name="key_ctrl_x">^X</string>
+    <string name="key_ctrl_o">^O</string>
+    <string name="key_clear">CLEAR</string>
+
+    <!-- Open Port Action -->
+    <string name="open_service">Open</string>
 </resources>

@@ -79,6 +79,11 @@ sealed class Result<out T> {
         is Success -> data
         is Failure -> throw error
     }
+
+    fun getOrDefault(defaultValue: @UnsafeVariance T): T = when (this) {
+        is Success -> data
+        is Failure -> defaultValue
+    }
     
     inline fun <R> map(transform: (T) -> R): Result<R> = when (this) {
         is Success -> Success(transform(data))

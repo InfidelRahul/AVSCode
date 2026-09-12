@@ -64,17 +64,36 @@
                 android:textSize="12sp" />
         </LinearLayout>
 
-        <com.google.android.material.button.MaterialButton
-            android:id="@+id/btn_copy_port_url"
-            style="@style/Widget.Material3.Button.TonalButton"
+        <LinearLayout
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
-            android:minWidth="0dp"
-            android:paddingHorizontal="12dp"
-            android:text="@string/copy_url"
-            android:textSize="12sp"
-            app:icon="@drawable/ic_content_copy"
-            app:iconSize="16dp" />
+            android:orientation="horizontal">
+
+            <com.google.android.material.button.MaterialButton
+                android:id="@+id/btn_open_port"
+                style="@style/Widget.Material3.Button.TonalButton"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginEnd="6dp"
+                android:minWidth="0dp"
+                android:paddingHorizontal="10dp"
+                android:text="@string/open_service"
+                android:textSize="12sp"
+                app:icon="@drawable/ic_launch"
+                app:iconSize="15dp" />
+
+            <com.google.android.material.button.MaterialButton
+                android:id="@+id/btn_copy_port_url"
+                style="@style/Widget.Material3.Button.OutlinedButton"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:minWidth="0dp"
+                android:paddingHorizontal="10dp"
+                android:text="@string/copy_url"
+                android:textSize="12sp"
+                app:icon="@drawable/ic_content_copy"
+                app:iconSize="15dp" />
+        </LinearLayout>
     </LinearLayout>
 </com.google.android.material.card.MaterialCardView>
 

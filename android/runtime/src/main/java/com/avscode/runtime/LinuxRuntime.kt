@@ -53,6 +53,15 @@ interface LinuxRuntime {
     suspend fun executeStreaming(
         command: String,
         onOutput: (String) -> Unit
+    ): Result<Int> = executeStreaming(command, "/home/user", onOutput)
+
+    /**
+     * Execute a command in a specific working directory and stream output.
+     */
+    suspend fun executeStreaming(
+        command: String,
+        workingDir: String,
+        onOutput: (String) -> Unit
     ): Result<Int>
     
     /**

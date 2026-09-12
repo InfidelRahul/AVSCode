@@ -30,6 +30,7 @@ import com.avscode.core.AppState
 import com.avscode.core.AvsLogger
 import com.avscode.core.StoragePermissionHelper
 import com.avscode.ports.PortScanner
+import com.avscode.terminal.TerminalSession
 import com.avscode.web.VsCodeWebView
 import com.avscode.workspace.ArchiveFormat
 import com.avscode.workspace.WorkspaceArchiveManager
@@ -37,6 +38,8 @@ import com.google.android.material.button.MaterialButton
 import com.google.android.material.card.MaterialCardView
 import com.google.android.material.dialog.MaterialAlertDialogBuilder
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -122,6 +125,10 @@ class MainActivity : AppCompatActivity() {
     // Editor View
     private lateinit var btnEditorBackDashboard: MaterialButton
     private lateinit var tvEditorTitle: TextView
+    private lateinit var btnZoomOut: MaterialButton
+    private lateinit var tvZoomLevel: TextView
+    private lateinit var btnZoomIn: MaterialButton
+    private lateinit var btnToggleDesktop: MaterialButton
     private lateinit var btnEditorToTerminal: MaterialButton
     private lateinit var webviewContainer: FrameLayout
 
@@ -131,6 +138,20 @@ class MainActivity : AppCompatActivity() {
     private lateinit var btnTerminalToEditor: MaterialButton
     private lateinit var terminalScroll: ScrollView
     private lateinit var terminalOutput: TextView
+    private lateinit var btnScrollToBottom: MaterialButton
+    private lateinit var tvCliPrompt: TextView
+    private lateinit var keyEsc: MaterialButton
+    private lateinit var keyTab: MaterialButton
+    private lateinit var keyCtrl: MaterialButton
+    private lateinit var keyAlt: MaterialButton
+    private lateinit var keyUp: MaterialButton
+    private lateinit var keyDown: MaterialButton
+    private lateinit var keyLeft: MaterialButton
+    private lateinit var keyRight: MaterialButton
+    private lateinit var keyCtrlC: MaterialButton
+    private lateinit var keyCtrlX: MaterialButton
+    private lateinit var keyCtrlO: MaterialButton
+    private lateinit var keyClear: MaterialButton
     private lateinit var cliBar: LinearLayout
     private lateinit var commandInput: EditText
     private lateinit var btnRunCommand: MaterialButton
@@ -141,7 +162,11 @@ class MainActivity : AppCompatActivity() {
     private lateinit var portScanner: PortScanner
     private lateinit var workspaceArchiveManager: WorkspaceArchiveManager
     private lateinit var aboutInfoProvider: AboutInfoProvider
+    private lateinit var terminalSession: TerminalSession
     private var webViewAttached = false
+    private var isCtrlActive = false
+    private var isAltActive = false
+    private var portsAutoRefreshJob: Job? = null
 
     // Pending export state
     private var pendingExportProject: File? = null
@@ -179,9 +204,26 @@ class MainActivity : AppCompatActivity() {
         portScanner = PortScanner()
         workspaceArchiveManager = WorkspaceArchiveManager(runtimeController.paths.hostProjectsDir)
         aboutInfoProvider = AboutInfoProvider(this)
+        terminalSession = TerminalSession(runtimeController.linuxRuntime)
 
         updateAboutSection()
         updateWorkspaceSummary()
+
+        // Initialize Terminal UI
+        terminalOutput.text = terminalSession.buffer.render()
+        tvCliPrompt.text = terminalSession.getPrompt()
+
+        // Wire zoom and desktop mode callbacks
+        webViewManager.onZoomChanged = { level ->
+            runOnUiThread { tvZoomLevel.text = "$level%" }
+        }
+        webViewManager.onDesktopModeChanged = { isDesktop ->
+            runOnUiThread { updateDesktopButtonState(isDesktop) }
+        }
+        updateDesktopButtonState(webViewManager.isDesktopMode)
+
+        // Start live auto-refresh for open ports on dashboard
+        startPortsAutoRefresh()
 
         // Wire up dedicated in-app Auth Dialog (pure in-app WebView, NO external browser)
         runtimeController.onAuthRequestTriggered = { requestId, authUrl, title ->
@@ -203,7 +245,7 @@ class MainActivity : AppCompatActivity() {
         }
 
         webViewManager.onConnectionError = { err ->
-            appendTerminalLine("[WebView] Connection error: $err")
+            AvsLogger.w(TAG, "[WebView] Connection error: $err")
         }
 
         observeRuntimeState()
@@ -373,6 +415,10 @@ class MainActivity : AppCompatActivity() {
         // Editor View
         btnEditorBackDashboard = findViewById(R.id.btn_editor_back_dashboard)
         tvEditorTitle = findViewById(R.id.tv_editor_title)
+        btnZoomOut = findViewById(R.id.btn_zoom_out)
+        tvZoomLevel = findViewById(R.id.tv_zoom_level)
+        btnZoomIn = findViewById(R.id.btn_zoom_in)
+        btnToggleDesktop = findViewById(R.id.btn_toggle_desktop)
         btnEditorToTerminal = findViewById(R.id.btn_editor_to_terminal)
         webviewContainer = findViewById(R.id.webview_container)
 
@@ -382,6 +428,20 @@ class MainActivity : AppCompatActivity() {
         btnTerminalToEditor = findViewById(R.id.btn_terminal_to_editor)
         terminalScroll = findViewById(R.id.terminal_scroll)
         terminalOutput = findViewById(R.id.terminal_output)
+        btnScrollToBottom = findViewById(R.id.btn_scroll_to_bottom)
+        tvCliPrompt = findViewById(R.id.tv_cli_prompt)
+        keyEsc = findViewById(R.id.key_esc)
+        keyTab = findViewById(R.id.key_tab)
+        keyCtrl = findViewById(R.id.key_ctrl)
+        keyAlt = findViewById(R.id.key_alt)
+        keyUp = findViewById(R.id.key_up)
+        keyDown = findViewById(R.id.key_down)
+        keyLeft = findViewById(R.id.key_left)
+        keyRight = findViewById(R.id.key_right)
+        keyCtrlC = findViewById(R.id.key_ctrl_c)
+        keyCtrlX = findViewById(R.id.key_ctrl_x)
+        keyCtrlO = findViewById(R.id.key_ctrl_o)
+        keyClear = findViewById(R.id.key_clear)
         cliBar = findViewById(R.id.cli_bar)
         commandInput = findViewById(R.id.command_input)
         btnRunCommand = findViewById(R.id.btn_run_command)
@@ -450,6 +510,120 @@ class MainActivity : AppCompatActivity() {
 
         btnTerminalToEditor.setOnClickListener {
             showEditorView()
+        }
+
+        // Wire Zoom Controls
+        btnZoomOut.setOnClickListener {
+            val level = webViewManager.zoomOut()
+            tvZoomLevel.text = "$level%"
+        }
+
+        btnZoomIn.setOnClickListener {
+            val level = webViewManager.zoomIn()
+            tvZoomLevel.text = "$level%"
+        }
+
+        tvZoomLevel.setOnClickListener {
+            val level = webViewManager.resetZoom()
+            tvZoomLevel.text = "$level%"
+            Toast.makeText(this, R.string.reset_zoom, Toast.LENGTH_SHORT).show()
+        }
+
+        btnToggleDesktop.setOnClickListener {
+            val isDesktop = webViewManager.toggleDesktopMode()
+            updateDesktopButtonState(isDesktop)
+            Toast.makeText(this, if (isDesktop) R.string.desktop_mode else R.string.mobile_mode, Toast.LENGTH_SHORT).show()
+        }
+
+        // Terminal Scroll Preservation & Bottom Chip
+        btnScrollToBottom.setOnClickListener {
+            btnScrollToBottom.visibility = View.GONE
+            scrollTerminalToBottom()
+        }
+
+        terminalScroll.viewTreeObserver.addOnScrollChangedListener {
+            if (isTerminalAtBottom()) {
+                btnScrollToBottom.visibility = View.GONE
+            }
+        }
+
+        // Wire Terminal Accessory Key Bar
+        keyEsc.setOnClickListener {
+            commandInput.setText("")
+        }
+
+        keyTab.setOnClickListener {
+            val start = commandInput.selectionStart
+            val end = commandInput.selectionEnd
+            if (start >= 0 && end >= 0) {
+                commandInput.text.replace(minOf(start, end), maxOf(start, end), "\t", 0, 1)
+            } else {
+                commandInput.append("\t")
+            }
+        }
+
+        keyCtrl.setOnClickListener {
+            isCtrlActive = !isCtrlActive
+            keyCtrl.isSelected = isCtrlActive
+            keyCtrl.setTextColor(if (isCtrlActive) getColor(R.color.accent) else 0xFFFFFFFF.toInt())
+        }
+
+        keyAlt.setOnClickListener {
+            isAltActive = !isAltActive
+            keyAlt.isSelected = isAltActive
+            keyAlt.setTextColor(if (isAltActive) getColor(R.color.accent) else 0xFFFFFFFF.toInt())
+        }
+
+        keyUp.setOnClickListener {
+            terminalSession.navigateHistory(up = true)?.let { prev ->
+                commandInput.setText(prev)
+                commandInput.setSelection(prev.length)
+            }
+        }
+
+        keyDown.setOnClickListener {
+            terminalSession.navigateHistory(up = false)?.let { next ->
+                commandInput.setText(next)
+                commandInput.setSelection(next.length)
+            }
+        }
+
+        keyLeft.setOnClickListener {
+            val pos = (commandInput.selectionStart - 1).coerceAtLeast(0)
+            commandInput.setSelection(pos)
+        }
+
+        keyRight.setOnClickListener {
+            val pos = (commandInput.selectionStart + 1).coerceAtMost(commandInput.text.length)
+            commandInput.setSelection(pos)
+        }
+
+        keyCtrlC.setOnClickListener {
+            if (commandInput.text.isNotEmpty()) {
+                commandInput.setText("")
+            } else {
+                lifecycleScope.launch {
+                    terminalSession.executeCommand("^C") { rendered ->
+                        runOnUiThread { updateTerminalDisplay(rendered) }
+                    }
+                }
+            }
+        }
+
+        keyCtrlX.setOnClickListener {
+            commandInput.append("\u0018")
+        }
+
+        keyCtrlO.setOnClickListener {
+            commandInput.append("\u000F")
+        }
+
+        keyClear.setOnClickListener {
+            lifecycleScope.launch {
+                terminalSession.executeCommand("clear") { rendered ->
+                    runOnUiThread { updateTerminalDisplay(rendered) }
+                }
+            }
         }
 
         btnRunCommand.setOnClickListener {
@@ -552,6 +726,7 @@ class MainActivity : AppCompatActivity() {
         installationContainer.visibility = View.GONE
         editorContainer.visibility = View.GONE
         terminalContainer.visibility = View.VISIBLE
+        tvCliPrompt.text = terminalSession.getPrompt()
         scrollTerminalToBottom()
     }
 
@@ -881,22 +1056,43 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun observeTerminalLogs() {
+        // Internal supervisor/runtime logs are monitored for diagnostics without polluting user terminal
         lifecycleScope.launch {
             runtimeController.terminalLogs.collect { line ->
-                appendTerminalLine(line)
+                AvsLogger.d(TAG, "[SupervisorLog] $line")
             }
         }
     }
 
     private fun appendTerminalLine(line: String) {
-        terminalOutput.append(line + "\n")
-        scrollTerminalToBottom()
+        terminalSession.buffer.appendLine(line)
+        updateTerminalDisplay(terminalSession.buffer.render())
+    }
+
+    private fun isTerminalAtBottom(): Boolean {
+        val diff = (terminalOutput.bottom - (terminalScroll.height + terminalScroll.scrollY))
+        return diff <= 120
+    }
+
+    private fun updateTerminalDisplay(rendered: String) {
+        val isAtBottom = isTerminalAtBottom()
+        terminalOutput.text = rendered
+        tvCliPrompt.text = terminalSession.getPrompt()
+        if (isAtBottom) {
+            scrollTerminalToBottom()
+        } else {
+            btnScrollToBottom.visibility = View.VISIBLE
+        }
     }
 
     private fun scrollTerminalToBottom() {
         terminalScroll.post {
             terminalScroll.fullScroll(View.FOCUS_DOWN)
         }
+    }
+
+    private fun updateDesktopButtonState(isDesktop: Boolean) {
+        btnToggleDesktop.setIconTintResource(if (isDesktop) R.color.accent else R.color.text_secondary)
     }
 
     private fun attachAndLoadWebView(url: String) {
@@ -910,51 +1106,97 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun submitCommand() {
-        val cmd = commandInput.text.toString().trim()
-        if (cmd.isEmpty()) return
+        val cmd = commandInput.text.toString()
+        if (cmd.trim().isEmpty()) return
 
         commandInput.setText("")
-        appendTerminalLine("guest:$ $cmd")
-
         lifecycleScope.launch {
-            runtimeController.executeGuestCommand(cmd) { line ->
-                appendTerminalLine(line)
+            terminalSession.executeCommand(cmd) { rendered ->
+                runOnUiThread {
+                    updateTerminalDisplay(rendered)
+                }
+            }
+        }
+    }
+
+    private fun startPortsAutoRefresh() {
+        portsAutoRefreshJob?.cancel()
+        portsAutoRefreshJob = lifecycleScope.launch {
+            while (true) {
+                if (dashboardContainer.visibility == View.VISIBLE) {
+                    updatePortsList()
+                }
+                delay(4000)
             }
         }
     }
 
     private fun updatePortsList() {
-        val primaryPort = runtimeController.serverPort
-        val bridgePort = runtimeController.authBridgePort
-        val ports = portScanner.scanPorts(primaryPort, bridgePort)
+        lifecycleScope.launch(Dispatchers.IO) {
+            val primaryPort = runtimeController.serverPort
+            val bridgePort = runtimeController.authBridgePort
 
-        layoutPortsList.removeAllViews()
-        if (ports.isEmpty()) {
-            tvNoOpenPorts.visibility = View.VISIBLE
-            layoutPortsList.visibility = View.GONE
-        } else {
-            tvNoOpenPorts.visibility = View.GONE
-            layoutPortsList.visibility = View.VISIBLE
+            // Query guest processes if Linux is running
+            val guestProcessMap = try {
+                if (runtimeController.linuxRuntime.state.value.isRunning) {
+                    val ssOutput = runtimeController.linuxRuntime.execute("ss -tlnp 2>/dev/null || netstat -tlnp 2>/dev/null").getOrDefault("")
+                    portScanner.parseGuestSockets(ssOutput)
+                } else emptyMap()
+            } catch (e: Exception) {
+                emptyMap()
+            }
 
-            for (port in ports) {
-                val itemView = layoutInflater.inflate(R.layout.item_open_port, layoutPortsList, false)
-                val badge = itemView.findViewById<TextView>(R.id.port_badge)
-                val serviceName = itemView.findViewById<TextView>(R.id.port_service_name)
-                val urlView = itemView.findViewById<TextView>(R.id.port_url)
-                val btnCopy = itemView.findViewById<MaterialButton>(R.id.btn_copy_port_url)
+            val ports = portScanner.scanPorts(
+                primaryVsCodePort = primaryPort,
+                authBridgePort = bridgePort,
+                guestProcessMap = guestProcessMap
+            )
 
-                badge.text = port.port.toString()
-                serviceName.text = port.serviceName
-                urlView.text = port.url
+            withContext(Dispatchers.Main) {
+                layoutPortsList.removeAllViews()
+                if (ports.isEmpty()) {
+                    tvNoOpenPorts.visibility = View.VISIBLE
+                    layoutPortsList.visibility = View.GONE
+                } else {
+                    tvNoOpenPorts.visibility = View.GONE
+                    layoutPortsList.visibility = View.VISIBLE
 
-                btnCopy.setOnClickListener {
-                    val clipboard = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-                    val clip = ClipData.newPlainText("URL", port.url)
-                    clipboard.setPrimaryClip(clip)
-                    Toast.makeText(this@MainActivity, R.string.copied_to_clipboard, Toast.LENGTH_SHORT).show()
+                    for (port in ports) {
+                        val itemView = layoutInflater.inflate(R.layout.item_open_port, layoutPortsList, false)
+                        val badge = itemView.findViewById<TextView>(R.id.port_badge)
+                        val serviceName = itemView.findViewById<TextView>(R.id.port_service_name)
+                        val urlView = itemView.findViewById<TextView>(R.id.port_url)
+                        val btnOpen = itemView.findViewById<MaterialButton>(R.id.btn_open_port)
+                        val btnCopy = itemView.findViewById<MaterialButton>(R.id.btn_copy_port_url)
+
+                        badge.text = port.port.toString()
+                        serviceName.text = port.serviceName
+                        urlView.text = port.url
+
+                        btnOpen.setOnClickListener {
+                            if (port.isPrimaryVsCode) {
+                                showEditorView()
+                            } else {
+                                try {
+                                    val intent = Intent(Intent.ACTION_VIEW, Uri.parse(port.url))
+                                    startActivity(intent)
+                                } catch (e: Exception) {
+                                    attachAndLoadWebView(port.url)
+                                    showEditorView()
+                                }
+                            }
+                        }
+
+                        btnCopy.setOnClickListener {
+                            val clipboard = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                            val clip = ClipData.newPlainText("URL", port.url)
+                            clipboard.setPrimaryClip(clip)
+                            Toast.makeText(this@MainActivity, R.string.copied_to_clipboard, Toast.LENGTH_SHORT).show()
+                        }
+
+                        layoutPortsList.addView(itemView)
+                    }
                 }
-
-                layoutPortsList.addView(itemView)
             }
         }
     }
@@ -1141,6 +1383,7 @@ class MainActivity : AppCompatActivity() {
 
     override fun onDestroy() {
         AvsLogger.i(TAG, "MainActivity destroyed")
+        portsAutoRefreshJob?.cancel()
         authWebView?.stopLoading()
         authWebView?.destroy()
         authWebView = null

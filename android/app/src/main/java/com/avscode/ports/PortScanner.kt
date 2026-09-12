@@ -16,7 +16,8 @@ class PortScanner {
         primaryVsCodePort: Int?,
         authBridgePort: Int? = null,
         tcpProcFile: File = File("/proc/net/tcp"),
-        tcp6ProcFile: File = File("/proc/net/tcp6")
+        tcp6ProcFile: File = File("/proc/net/tcp6"),
+        guestProcessMap: Map<Int, String> = emptyMap()
     ): List<DiscoveredPort> {
         val listeningPorts = mutableSetOf<Int>()
 
@@ -29,26 +30,19 @@ class PortScanner {
         parseProcNetTcp(tcpProcFile, listeningPorts)
         parseProcNetTcp(tcp6ProcFile, listeningPorts)
 
-        // 3. Remove internal bridge port if specified
+        // 3. Include any ports discovered via guest process socket scan
+        listeningPorts.addAll(guestProcessMap.keys)
+
+        // 4. Remove internal bridge port if specified
         if (authBridgePort != null) {
             listeningPorts.remove(authBridgePort)
         }
 
-        // 4. Map into DiscoveredPort models
+        // 5. Map into DiscoveredPort models with extension server identification
         return listeningPorts.sorted().map { port ->
             val isPrimary = (port == primaryVsCodePort)
-            val serviceName = when {
-                isPrimary -> "VS Code Server"
-                port == 3000 -> "React / Next.js Dev Server"
-                port == 5173 -> "Vite Dev Server"
-                port == 8000 -> "Python / HTTP Dev Server"
-                port == 8080 -> "Web Dev Server"
-                port == 4200 -> "Angular Dev Server"
-                port == 5000 -> "Flask / Dev Server"
-                port in 3001..3010 -> "Node Dev Server"
-                port in 8081..8099 -> "Web Service"
-                else -> "Local Service"
-            }
+            val guestProc = guestProcessMap[port]
+            val serviceName = resolveServiceName(port, isPrimary, guestProc)
             DiscoveredPort(
                 port = port,
                 serviceName = serviceName,
@@ -56,6 +50,77 @@ class PortScanner {
                 isPrimaryVsCode = isPrimary
             )
         }
+    }
+
+    internal fun resolveServiceName(port: Int, isPrimary: Boolean, guestProcessName: String?): String {
+        if (isPrimary) return "VS Code Server"
+
+        val proc = guestProcessName?.lowercase()
+        if (proc != null) {
+            when {
+                proc.contains("antigravity") -> return "Antigravity AI Agent"
+                proc.contains("kilo") -> return "Kilo Server"
+                proc.contains("codespace") -> return "GitHub Codespaces"
+                proc.contains("jupyter") -> return "Jupyter Notebook"
+                proc.contains("streamlit") -> return "Streamlit App"
+                proc.contains("gradio") -> return "Gradio Web UI"
+                proc.contains("vite") -> return "Vite Dev Server"
+                proc.contains("next") -> return "Next.js Dev Server"
+                proc.contains("live-server") -> return "Live Server"
+                proc.contains("fastapi") || proc.contains("uvicorn") -> return "FastAPI Server"
+                proc.contains("flask") -> return "Flask Dev Server"
+                proc.contains("node") -> return "Node.js Server"
+                proc.contains("python") -> return "Python Server"
+            }
+        }
+
+        return when {
+            port == 3000 -> "React / Next.js Dev Server"
+            port == 5173 -> "Vite Dev Server"
+            port == 5500 -> "Live Server"
+            port == 7860 -> "Gradio Web UI"
+            port == 8000 -> "Python / HTTP Dev Server"
+            port == 8080 -> "Web Dev Server"
+            port == 8501 -> "Streamlit App"
+            port == 8888 -> "Jupyter Notebook"
+            port == 4200 -> "Angular Dev Server"
+            port == 5000 -> "Flask / Dev Server"
+            port in 3001..3010 -> "Node Dev Server"
+            port in 8081..8099 -> "Web Service"
+            port in 9000..9099 -> "Dev Microservice"
+            else -> "Local Service"
+        }
+    }
+
+    /**
+     * Parses ss -tlnp or netstat -tlnp command output to map ports to process names.
+     */
+    fun parseGuestSockets(output: String): Map<Int, String> {
+        val result = mutableMapOf<Int, String>()
+        if (output.isBlank()) return result
+
+        val portRegex = Regex("(?::|\\.)([0-9]{2,5})\\s+")
+        val procRegex = Regex("\"([^\"]+)\"")
+
+        for (line in output.lines()) {
+            if (!line.contains("LISTEN", ignoreCase = true)) continue
+
+            val portMatch = portRegex.find(line)
+            val port = portMatch?.groupValues?.get(1)?.toIntOrNull() ?: continue
+
+            val procMatch = procRegex.find(line)
+            val procName = procMatch?.groupValues?.get(1) ?: when {
+                line.contains("antigravity", ignoreCase = true) -> "antigravity"
+                line.contains("kilo", ignoreCase = true) -> "kilo"
+                line.contains("codespace", ignoreCase = true) -> "codespaces"
+                line.contains("node", ignoreCase = true) -> "node"
+                line.contains("python", ignoreCase = true) -> "python"
+                else -> "service"
+            }
+
+            result[port] = procName
+        }
+        return result
     }
 
     internal fun parseProcNetTcp(file: File, destination: MutableSet<Int>) {

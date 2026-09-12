@@ -17,11 +17,17 @@ class VsCodeWebView(private val context: Context) {
 
     companion object {
         private const val TAG = "VsCodeWebView"
+        const val DESKTOP_USER_AGENT = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36"
     }
 
     private var webView: WebView? = null
     private var isReady = false
     private var lastLoadedUrl: String? = null
+
+    var isDesktopMode: Boolean = true
+        private set
+    var currentZoomLevel: Int = 100
+        private set
 
     var serverPort: Int? = null
         private set
@@ -34,6 +40,8 @@ class VsCodeWebView(private val context: Context) {
     var onLoadingStateChanged: ((Boolean) -> Unit)? = null
     var onConnectionError: ((String) -> Unit)? = null
     var onAuthCallbackReceived: ((Uri) -> Boolean)? = null
+    var onZoomChanged: ((Int) -> Unit)? = null
+    var onDesktopModeChanged: ((Boolean) -> Unit)? = null
 
     /**
      * Create and configure the WebView for VS Code Web.
@@ -44,7 +52,7 @@ class VsCodeWebView(private val context: Context) {
             return webView!!
         }
 
-        AvsLogger.d(TAG, "Creating and configuring WebView for VS Code")
+        AvsLogger.d(TAG, "Creating and configuring WebView for VS Code (DesktopMode=$isDesktopMode)")
 
         val view = WebView(context).apply {
             isFocusable = true
@@ -54,22 +62,26 @@ class VsCodeWebView(private val context: Context) {
             settings.apply {
                 javaScriptEnabled = true
                 domStorageEnabled = true
-                databaseEnabled = true
                 useWideViewPort = true
                 loadWithOverviewMode = true
-                builtInZoomControls = false
+                setSupportZoom(true)
+                builtInZoomControls = true
                 displayZoomControls = false
                 cacheMode = WebSettings.LOAD_DEFAULT
                 mixedContentMode = WebSettings.MIXED_CONTENT_ALWAYS_ALLOW
                 allowFileAccess = true
                 allowContentAccess = true
                 mediaPlaybackRequiresUserGesture = false
+                if (isDesktopMode) {
+                    userAgentString = DESKTOP_USER_AGENT
+                }
             }
 
             webViewClient = object : WebViewClient() {
                 override fun onPageStarted(view: WebView?, url: String?, favicon: Bitmap?) {
                     super.onPageStarted(view, url, favicon)
                     AvsLogger.d(TAG, "Page started loading: $url")
+                    injectViewportOverride(view)
                     onLoadingStateChanged?.invoke(true)
                 }
 
@@ -77,6 +89,8 @@ class VsCodeWebView(private val context: Context) {
                     super.onPageFinished(view, url)
                     AvsLogger.i(TAG, "VS Code Web page finished loading: $url")
                     isReady = true
+                    injectViewportOverride(view)
+                    applyZoom()
                     onLoadingStateChanged?.invoke(false)
                 }
 
@@ -266,5 +280,100 @@ class VsCodeWebView(private val context: Context) {
         }
         if (editorUrl != null && uri.toString().startsWith(editorUrl!!)) return true
         return false
+    }
+
+    /**
+     * Injects JavaScript to forcibly override viewport meta tags that prevent zooming
+     * (e.g. user-scalable=no, maximum-scale=1.0).
+     */
+    fun injectViewportOverride(view: WebView?) {
+        val js = """
+            (function() {
+                try {
+                    var meta = document.querySelector('meta[name="viewport"]');
+                    if (!meta) {
+                        meta = document.createElement('meta');
+                        meta.name = 'viewport';
+                        document.head.appendChild(meta);
+                    }
+                    meta.setAttribute('content', 'width=device-width, initial-scale=1.0, minimum-scale=0.25, maximum-scale=5.0, user-scalable=yes');
+                } catch(e) {}
+            })();
+        """.trimIndent()
+        view?.evaluateJavascript(js, null)
+    }
+
+    /**
+     * Forcibly zooms in both via WebKit native zoom and CSS body zoom.
+     */
+    fun zoomIn(): Int {
+        if (currentZoomLevel < 300) {
+            currentZoomLevel = (currentZoomLevel + 15).coerceAtMost(300)
+            webView?.zoomIn()
+            applyZoom()
+            onZoomChanged?.invoke(currentZoomLevel)
+        }
+        return currentZoomLevel
+    }
+
+    /**
+     * Forcibly zooms out both via WebKit native zoom and CSS body zoom.
+     */
+    fun zoomOut(): Int {
+        if (currentZoomLevel > 40) {
+            currentZoomLevel = (currentZoomLevel - 15).coerceAtLeast(40)
+            webView?.zoomOut()
+            applyZoom()
+            onZoomChanged?.invoke(currentZoomLevel)
+        }
+        return currentZoomLevel
+    }
+
+    /**
+     * Resets zoom to default 100%.
+     */
+    fun resetZoom(): Int {
+        currentZoomLevel = 100
+        applyZoom()
+        onZoomChanged?.invoke(currentZoomLevel)
+        return currentZoomLevel
+    }
+
+    /**
+     * Directly sets zoom level percentage.
+     */
+    fun setZoomLevel(level: Int) {
+        currentZoomLevel = level.coerceIn(40, 300)
+        applyZoom()
+        onZoomChanged?.invoke(currentZoomLevel)
+    }
+
+    /**
+     * Applies CSS body zoom to scale editor UI reliably.
+     */
+    private fun applyZoom() {
+        val factor = currentZoomLevel / 100.0
+        val js = """
+            (function() {
+                try {
+                    document.body.style.zoom = '$factor';
+                    document.documentElement.style.zoom = '$factor';
+                } catch(e) {}
+            })();
+        """.trimIndent()
+        webView?.evaluateJavascript(js, null)
+    }
+
+    /**
+     * Toggles between Desktop Mode and Mobile Mode and reloads WebView.
+     */
+    fun toggleDesktopMode(): Boolean {
+        isDesktopMode = !isDesktopMode
+        val newUa = if (isDesktopMode) DESKTOP_USER_AGENT else null
+        webView?.settings?.userAgentString = newUa
+        AvsLogger.i(TAG, "Toggled desktop mode to $isDesktopMode (UA: $newUa)")
+        onDesktopModeChanged?.invoke(isDesktopMode)
+        reload()
+        return isDesktopMode
     }
 }

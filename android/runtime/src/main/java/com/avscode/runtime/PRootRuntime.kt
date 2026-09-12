@@ -353,6 +353,12 @@ class PRootRuntime(
     override suspend fun executeStreaming(
         command: String,
         onOutput: (String) -> Unit
+    ): Result<Int> = executeStreaming(command, "/home/user", onOutput)
+
+    override suspend fun executeStreaming(
+        command: String,
+        workingDir: String,
+        onOutput: (String) -> Unit
     ): Result<Int> = withContext(Dispatchers.IO) {
         runCatchingResult {
             if (!isInstalled()) {
@@ -360,8 +366,8 @@ class PRootRuntime(
             }
 
             val outputFile = File(paths.cacheDir, "stream_${System.currentTimeMillis()}_${(0..9999).random()}.log")
-            val args = buildPRootArgs(command, "/home/user")
-            val env = buildEnvironment("/home/user")
+            val args = buildPRootArgs(command, workingDir)
+            val env = buildEnvironment(workingDir)
 
             try {
                 val spawnResult = NativeSpawn.spawn(
@@ -379,10 +385,12 @@ class PRootRuntime(
                     if (outputFile.exists() && outputFile.length() > lastPos) {
                         RandomAccessFile(outputFile, "r").use { raf ->
                             raf.seek(lastPos)
-                            var line = raf.readLine()
-                            while (line != null) {
-                                onOutput(line)
-                                line = raf.readLine()
+                            val remaining = (raf.length() - lastPos).toInt()
+                            if (remaining > 0) {
+                                val buffer = ByteArray(remaining)
+                                raf.readFully(buffer)
+                                val text = String(buffer, Charsets.UTF_8)
+                                onOutput(text)
                             }
                             lastPos = raf.filePointer
                         }
@@ -393,16 +401,18 @@ class PRootRuntime(
                         if (outputFile.exists() && outputFile.length() > lastPos) {
                             RandomAccessFile(outputFile, "r").use { raf ->
                                 raf.seek(lastPos)
-                                var line = raf.readLine()
-                                while (line != null) {
-                                    onOutput(line)
-                                    line = raf.readLine()
+                                val remaining = (raf.length() - lastPos).toInt()
+                                if (remaining > 0) {
+                                    val buffer = ByteArray(remaining)
+                                    raf.readFully(buffer)
+                                    val text = String(buffer, Charsets.UTF_8)
+                                    onOutput(text)
                                 }
                             }
                         }
                         return@runCatchingResult status
                     }
-                    delay(100)
+                    delay(50)
                 }
 
                 @Suppress("UNREACHABLE_CODE")
