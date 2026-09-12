@@ -1,6 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <string name="app_name">AVscode</string>
+    <string name="app_name">AVSCode</string>
+    <string name="app_tagline">VS Code for Android • Local Linux Runtime</string>
     <string name="loading">Loading...</string>
     <string name="installing_linux">Installing Linux environment...</string>
     <string name="starting_linux">Starting Linux...</string>
@@ -10,6 +11,7 @@
     <string name="retry">Retry</string>
     <string name="cancel">Cancel</string>
     <string name="ok">OK</string>
+    <string name="close">Close</string>
     <string name="runtime_not_installed">Linux environment not installed</string>
     <string name="runtime_start_failed">Failed to start Linux runtime</string>
     <string name="vscode_server_failed">Failed to start VS Code Server</string>
@@ -22,4 +24,56 @@
     <string name="grant_storage_access">Grant Storage Access &amp; Continue</string>
     <string name="toggle_terminal">Toggle Terminal</string>
     <string name="run_command">Run</string>
+    <string name="dashboard">Dashboard</string>
+    <string name="return_to_dashboard">Return to Dashboard</string>
+
+    <!-- VS Code Card -->
+    <string name="vscode_card_title">Visual Studio Code</string>
+    <string name="vscode_card_subtitle">Local Web Server &amp; Editor</string>
+    <string name="start_vscode">Start VS Code</string>
+    <string name="return_to_code">Return to Code</string>
+    <string name="vscode_status_stopped">Server stopped</string>
+    <string name="vscode_status_running">Server active on %s</string>
+    <string name="vscode_status_starting">Starting VS Code server...</string>
+    <string name="vscode_status_failed">Failed to start server</string>
+
+    <!-- Terminal Card -->
+    <string name="terminal_card_title">Ubuntu Linux Terminal</string>
+    <string name="terminal_card_subtitle">PRoot userspace &amp; AI automated coding shell</string>
+    <string name="open_terminal">Open Terminal</string>
+
+    <!-- Open Ports Card -->
+    <string name="open_ports_title">Open Ports</string>
+    <string name="open_ports_subtitle">Active listening ports in Linux userspace</string>
+    <string name="no_open_ports">No open ports detected</string>
+    <string name="copy_url">Copy URL</string>
+    <string name="copied_to_clipboard">URL copied to clipboard</string>
+    <string name="refresh_ports">Refresh</string>
+
+    <!-- Workspace Card -->
+    <string name="workspace_title">Workspace Projects</string>
+    <string name="workspace_subtitle">/home/user/projects</string>
+    <string name="import_archive">Import Archive</string>
+    <string name="export_project">Export Project</string>
+    <string name="select_project_to_export">Select project to export</string>
+    <string name="select_export_format">Choose Export Format</string>
+    <string name="no_projects_found">No projects found in workspace</string>
+    <string name="import_success">Imported %d files into workspace</string>
+    <string name="export_success">Project exported successfully</string>
+    <string name="operation_failed">Operation failed: %s</string>
+
+    <!-- About Section -->
+    <string name="about_title">About AVSCode</string>
+    <string name="about_subtitle">Environment &amp; Hardware Details</string>
+    <string name="app_version_label">AVSCode Version</string>
+    <string name="linux_distro_label">Linux Userspace</string>
+    <string name="vscode_cli_label">VS Code Engine</string>
+    <string name="android_version_label">Android Host</string>
+    <string name="device_model_label">Device Model</string>
+    <string name="cpu_arch_label">CPU Architecture</string>
+    <string name="kernel_label">Kernel</string>
+    <string name="projects_path_label">Projects Path</string>
+    <string name="settings_title">Settings</string>
+    <string name="clear_logs">Clear Server Logs</string>
+    <string name="logs_cleared">Logs cleared</string>
 </resources>

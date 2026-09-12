@@ -60,6 +60,7 @@ class RuntimeController private constructor(private val context: Context) {
 
     val authBridgePort: Int get() = authBridgeServer.authBridgePort
     val serverPort: Int? get() = vscodeCli.getServerPort()
+    val activeServerUrl: String? get() = vscodeCli.getServerUrl()
 
     private val _appState = MutableStateFlow<AppState>(AppState.NeedsStorageAccess)
     val appState: StateFlow<AppState> = _appState.asStateFlow()

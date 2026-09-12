@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <color name="status_bar">#121212</color>
+    <color name="navigation_bar">#121212</color>
+    <color name="window_background">#121212</color>
+    <color name="surface_color">#1E1E1E</color>
+    <color name="card_background">#1E1E1E</color>
+    <color name="card_stroke">#2D2D2D</color>
+    <color name="vscode_background">#1E1E1E</color>
+    <color name="loading_background">#121212</color>
+    <color name="accent">#007ACC</color>
+    <color name="accent_container">#0D3352</color>
+    <color name="text_primary">#E6E6E6</color>
+    <color name="text_secondary">#9E9E9E</color>
+    <color name="terminal_background">#121212</color>
+    <color name="terminal_text">#4AF626</color>
+    <color name="terminal_secondary">#9CDCFE</color>
+    <color name="badge_background">#1A2E40</color>
+    <color name="badge_text">#64B5F6</color>
+    <color name="success_color">#4CAF50</color>
+    <color name="error_color">#EF5350</color>
+</resources>
+

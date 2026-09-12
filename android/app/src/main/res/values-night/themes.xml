@@ -1,12 +1,12 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources xmlns:tools="http://schemas.android.com/tools">
-    <!-- Base application theme (Light) -->
+    <!-- Base application theme (Dark) -->
     <style name="Theme.AVscode" parent="Theme.Material3.DayNight.NoActionBar">
         <item name="android:statusBarColor">@color/status_bar</item>
         <item name="android:navigationBarColor">@color/navigation_bar</item>
         <item name="android:windowBackground">@color/window_background</item>
-        <item name="android:windowLightStatusBar" tools:targetApi="m">true</item>
-        <item name="android:windowLightNavigationBar" tools:targetApi="o_mr1">true</item>
+        <item name="android:windowLightStatusBar" tools:targetApi="m">false</item>
+        <item name="android:windowLightNavigationBar" tools:targetApi="o_mr1">false</item>
         <item name="colorPrimary">@color/accent</item>
         <item name="colorSecondary">@color/accent</item>
         <item name="colorSurface">@color/surface_color</item>
@@ -17,3 +17,4 @@
         <item name="android:windowBackground">@color/window_background</item>
     </style>
 </resources>
+
