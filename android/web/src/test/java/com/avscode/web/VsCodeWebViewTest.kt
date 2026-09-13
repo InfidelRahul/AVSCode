@@ -14,6 +14,43 @@ class VsCodeWebViewTest {
     }
 
     @Test
+    fun testDesktopUserAgentIsArmSpecific() {
+        val ua = VsCodeWebView.DESKTOP_USER_AGENT
+        assertNotNull(ua)
+        assertTrue("Desktop UA must be ARM-specific (aarch64): $ua", ua.contains("Linux aarch64"))
+        assertFalse("Desktop UA must NOT contain x86_64: $ua", ua.contains("x86_64"))
+        assertFalse("Desktop UA must NOT contain x86: $ua", ua.contains("x86"))
+        assertTrue("Desktop UA must contain Chrome token: $ua", ua.contains("Chrome/"))
+    }
+
+    @Test
+    fun testResolveLinuxArchitecture() {
+        assertEquals("aarch64", VsCodeWebView.resolveLinuxArchitecture("arm64-v8a"))
+        assertEquals("aarch64", VsCodeWebView.resolveLinuxArchitecture("aarch64"))
+        assertEquals("armv7l", VsCodeWebView.resolveLinuxArchitecture("armeabi-v7a"))
+        assertEquals("armv7l", VsCodeWebView.resolveLinuxArchitecture("armv7l"))
+        assertEquals("x86_64", VsCodeWebView.resolveLinuxArchitecture("x86_64"))
+        assertEquals("i686", VsCodeWebView.resolveLinuxArchitecture("x86"))
+        assertEquals("aarch64", VsCodeWebView.resolveLinuxArchitecture("unknown_arch"))
+    }
+
+    @Test
+    fun testBuildDesktopUserAgentArm64() {
+        val ua = VsCodeWebView.buildDesktopUserAgent(null, "arm64-v8a")
+        assertTrue("Must contain Linux aarch64: $ua", ua.contains("Linux aarch64"))
+        assertFalse("Must NOT contain x86_64: $ua", ua.contains("x86_64"))
+        assertTrue("Must contain Chrome token: $ua", ua.contains("Chrome/"))
+        assertTrue("Must start with Mozilla/5.0: $ua", ua.startsWith("Mozilla/5.0"))
+    }
+
+    @Test
+    fun testBuildDesktopUserAgentArm32() {
+        val ua = VsCodeWebView.buildDesktopUserAgent(null, "armeabi-v7a")
+        assertTrue("Must contain Linux armv7l: $ua", ua.contains("Linux armv7l"))
+        assertFalse("Must NOT contain x86_64: $ua", ua.contains("x86_64"))
+    }
+
+    @Test
     fun testBuildZoomJavaScriptDefault100() {
         val js = VsCodeWebView.buildZoomJavaScript(1.0)
         assertNotNull(js)

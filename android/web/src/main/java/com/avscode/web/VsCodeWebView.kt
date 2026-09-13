@@ -5,6 +5,7 @@ import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.Color
 import android.net.Uri
+import android.os.Build
 import android.view.KeyEvent
 import android.view.ScaleGestureDetector
 import android.view.View
@@ -20,10 +21,54 @@ class VsCodeWebView(private val context: Context) {
 
     companion object {
         private const val TAG = "VsCodeWebView"
-        const val DESKTOP_USER_AGENT = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36"
+
+        /**
+         * Default ARM64 Linux desktop User-Agent string.
+         * Explicitly uses ARM architecture (aarch64) to match the host Android ARM64 CPU
+         * and the guest Ubuntu ARM64 userspace.
+         */
+        const val DESKTOP_USER_AGENT = "Mozilla/5.0 (X11; Linux aarch64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36"
+
         const val MIN_ZOOM_LEVEL = 40
         const val MAX_ZOOM_LEVEL = 300
         const val ZOOM_STEP = 10
+
+        /**
+         * Resolves the appropriate Linux architecture string for the host device's primary ABI.
+         * Maps arm64-v8a to aarch64, armeabi-v7a to armv7l, etc.
+         */
+        fun resolveLinuxArchitecture(customAbi: String? = null): String {
+            val abi = customAbi ?: Build.SUPPORTED_ABIS.firstOrNull() ?: System.getProperty("os.arch").orEmpty()
+            return when {
+                abi.contains("arm64", ignoreCase = true) || abi.contains("aarch64", ignoreCase = true) -> "aarch64"
+                abi.contains("arm", ignoreCase = true) -> "armv7l"
+                abi.contains("x86_64", ignoreCase = true) -> "x86_64"
+                abi.contains("x86", ignoreCase = true) -> "i686"
+                else -> "aarch64"
+            }
+        }
+
+        /**
+         * Builds an ARM-specific desktop User-Agent string.
+         * Dynamically detects the device's installed Chrome/WebView version and primary ABI architecture
+         * (aarch64 for ARM64), ensuring VS Code and extensions recognize the Linux ARM environment.
+         */
+        fun buildDesktopUserAgent(context: Context? = null, customAbi: String? = null): String {
+            val arch = resolveLinuxArchitecture(customAbi)
+            var chromeToken = "Chrome/130.0.0.0"
+            if (context != null) {
+                try {
+                    val defaultUa = WebSettings.getDefaultUserAgent(context)
+                    val match = Regex("Chrome/([0-9.]+)").find(defaultUa)
+                    if (match != null) {
+                        chromeToken = match.value
+                    }
+                } catch (e: Exception) {
+                    AvsLogger.d(TAG, "Could not extract device Chrome version: ${e.message}")
+                }
+            }
+            return "Mozilla/5.0 (X11; Linux $arch) AppleWebKit/537.36 (KHTML, like Gecko) $chromeToken Safari/537.36"
+        }
 
         /**
          * Builds responsive CSS zoom JavaScript with inverse viewport scaling.
@@ -201,7 +246,7 @@ class VsCodeWebView(private val context: Context) {
                 allowContentAccess = true
                 mediaPlaybackRequiresUserGesture = false
                 if (isDesktopMode) {
-                    userAgentString = DESKTOP_USER_AGENT
+                    userAgentString = getDesktopUserAgent()
                 }
             }
 
@@ -423,9 +468,11 @@ class VsCodeWebView(private val context: Context) {
 
     /**
      * Injects JavaScript to lock the viewport meta tag to screen bounds,
-     * preventing blurry camera-level scaling and horizontal viewport clipping.
+     * preventing blurry camera-level scaling and horizontal viewport clipping,
+     * and ensures navigator.platform consistently reports the Linux ARM architecture.
      */
     fun injectViewportOverride(view: WebView?) {
+        val arch = resolveLinuxArchitecture()
         val js = """
             (function() {
                 try {
@@ -436,6 +483,17 @@ class VsCodeWebView(private val context: Context) {
                         document.head.appendChild(meta);
                     }
                     meta.setAttribute('content', 'width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no');
+
+                    // Ensure navigator.platform consistently reports ARM Linux architecture
+                    if (!navigator.__avsPlatformSet) {
+                        navigator.__avsPlatformSet = true;
+                        try {
+                            Object.defineProperty(navigator, 'platform', {
+                                get: function() { return 'Linux $arch'; },
+                                configurable: true
+                            });
+                        } catch(e) {}
+                    }
                 } catch(e) {}
             })();
         """.trimIndent()
@@ -497,11 +555,18 @@ class VsCodeWebView(private val context: Context) {
     }
 
     /**
+     * Resolves the desktop User-Agent string for the current host environment.
+     */
+    fun getDesktopUserAgent(): String {
+        return buildDesktopUserAgent(context)
+    }
+
+    /**
      * Toggles between Desktop Mode and Mobile Mode and reloads WebView.
      */
     fun toggleDesktopMode(): Boolean {
         isDesktopMode = !isDesktopMode
-        val newUa = if (isDesktopMode) DESKTOP_USER_AGENT else null
+        val newUa = if (isDesktopMode) getDesktopUserAgent() else null
         webView?.settings?.userAgentString = newUa
         AvsLogger.i(TAG, "Toggled desktop mode to $isDesktopMode (UA: $newUa)")
         onDesktopModeChanged?.invoke(isDesktopMode)
