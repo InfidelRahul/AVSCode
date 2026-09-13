@@ -8,6 +8,7 @@ class VsCodeWebViewTest {
 
     @Test
     fun testZoomConstants() {
+        assertEquals(75, VsCodeWebView.DEFAULT_ZOOM_LEVEL)
         assertEquals(40, VsCodeWebView.MIN_ZOOM_LEVEL)
         assertEquals(300, VsCodeWebView.MAX_ZOOM_LEVEL)
         assertEquals(10, VsCodeWebView.ZOOM_STEP)
@@ -51,46 +52,38 @@ class VsCodeWebViewTest {
     }
 
     @Test
-    fun testBuildZoomJavaScriptDefault100() {
-        val js = VsCodeWebView.buildZoomJavaScript(1.0)
+    fun testBuildZoomJavaScriptDefault75() {
+        val js = VsCodeWebView.buildZoomJavaScript(0.75)
         assertNotNull(js)
-        assertTrue(js.contains("var factor = 1.0000;"))
-        assertTrue(js.contains("100.000vw"))
-        assertTrue(js.contains("100.000vh"))
-        assertTrue(js.contains("body.style.zoom = factor;"))
+        assertTrue(js.contains("var factor = 0.7500;"))
+        assertTrue("Root documentElement must receive zoom factor", js.contains("docEl.style.zoom = factor;"))
+        assertTrue("Root documentElement must have 100% width", js.contains("docEl.style.width = '100%';"))
+        assertTrue("Root documentElement must have 100% height", js.contains("docEl.style.height = '100%';"))
+        assertTrue("Body zoom must be 1 to prevent double-scaling", js.contains("body.style.zoom = '1';"))
+        assertTrue("Body must fill 100% width", js.contains("body.style.width = '100%';"))
+        assertTrue("Body must fill 100% height", js.contains("body.style.height = '100%';"))
         assertTrue(js.contains(".monaco-workbench"))
         assertTrue(js.contains("window.dispatchEvent(new Event('resize'))"))
         assertTrue(js.contains("#181818"))
     }
 
     @Test
-    fun testBuildZoomJavaScriptZoomOutInverseCalculation() {
-        // 80% zoom out: body needs to be (100 / 0.8) = 125vw by 125vh so visual rendering is 100vw x 100vh
-        val js80 = VsCodeWebView.buildZoomJavaScript(0.8)
-        assertTrue(js80.contains("var factor = 0.8000;"))
-        assertTrue(js80.contains("125.000vw"))
-        assertTrue(js80.contains("125.000vh"))
-
-        // 50% zoom out: body needs to be 200vw by 200vh
+    fun testBuildZoomJavaScriptScalingFactors() {
+        // Zoom-out: 0.5 (50%)
         val js50 = VsCodeWebView.buildZoomJavaScript(0.5)
         assertTrue(js50.contains("var factor = 0.5000;"))
-        assertTrue(js50.contains("200.000vw"))
-        assertTrue(js50.contains("200.000vh"))
-    }
+        assertTrue(js50.contains("docEl.style.zoom = factor;"))
+        assertTrue(js50.contains("body.style.zoom = '1';"))
 
-    @Test
-    fun testBuildZoomJavaScriptZoomInInverseCalculation() {
-        // 125% zoom in: body needs to be (100 / 1.25) = 80vw by 80vh so visual rendering is 100vw x 100vh
-        val js125 = VsCodeWebView.buildZoomJavaScript(1.25)
-        assertTrue(js125.contains("var factor = 1.2500;"))
-        assertTrue(js125.contains("80.000vw"))
-        assertTrue(js125.contains("80.000vh"))
+        // Default 1.0 (100%)
+        val js100 = VsCodeWebView.buildZoomJavaScript(1.0)
+        assertTrue(js100.contains("var factor = 1.0000;"))
+        assertTrue(js100.contains("docEl.style.zoom = factor;"))
 
-        // 200% zoom in: body needs to be (100 / 2.0) = 50vw by 50vh
-        val js200 = VsCodeWebView.buildZoomJavaScript(2.0)
-        assertTrue(js200.contains("var factor = 2.0000;"))
-        assertTrue(js200.contains("50.000vw"))
-        assertTrue(js200.contains("50.000vh"))
+        // Zoom-in: 1.5 (150%)
+        val js150 = VsCodeWebView.buildZoomJavaScript(1.5)
+        assertTrue(js150.contains("var factor = 1.5000;"))
+        assertTrue(js150.contains("docEl.style.zoom = factor;"))
     }
 
     @Test
@@ -103,8 +96,6 @@ class VsCodeWebViewTest {
             val js = VsCodeWebView.buildZoomJavaScript(0.75)
             // Must contain dot decimals, NEVER comma
             assertTrue("JS must use dot decimal: $js", js.contains("0.7500"))
-            assertTrue("JS must use dot decimal in dimensions: $js", js.contains("133.333vw"))
-            assertTrue("JS must use dot decimal in dimensions: $js", js.contains("133.333vh"))
             assertFalse("JS must not contain comma decimals in numbers", js.contains("0,7500"))
         } finally {
             Locale.setDefault(originalLocale)

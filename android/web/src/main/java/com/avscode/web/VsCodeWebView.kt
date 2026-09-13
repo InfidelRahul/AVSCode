@@ -29,6 +29,7 @@ class VsCodeWebView(private val context: Context) {
          */
         const val DESKTOP_USER_AGENT = "Mozilla/5.0 (X11; Linux aarch64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36"
 
+        const val DEFAULT_ZOOM_LEVEL = 75
         const val MIN_ZOOM_LEVEL = 40
         const val MAX_ZOOM_LEVEL = 300
         const val ZOOM_STEP = 10
@@ -71,13 +72,13 @@ class VsCodeWebView(private val context: Context) {
         }
 
         /**
-         * Builds responsive CSS zoom JavaScript with inverse viewport scaling.
-         * Uses Locale.US to ensure dot decimals in JS/CSS numbers across all device locales.
+         * Builds responsive CSS zoom JavaScript that scales the entire document root (html).
+         * Applying zoom to documentElement ensures the VS Code workbench always fills the full
+         * screen without leaving any empty blank margins, while dynamically adapting layout
+         * width and height to the zoom factor.
          */
         fun buildZoomJavaScript(factor: Double): String {
             val fStr = String.format(Locale.US, "%.4f", factor)
-            val invW = String.format(Locale.US, "%.3fvw", 100.0 / factor)
-            val invH = String.format(Locale.US, "%.3fvh", 100.0 / factor)
 
             return """
                 (function() {
@@ -89,25 +90,28 @@ class VsCodeWebView(private val context: Context) {
                         var body = document.body;
                         if (!docEl || !body) return;
 
-                        // Ensure root document fills the exact viewport with no overflow or margins
-                        docEl.style.width = '100vw';
-                        docEl.style.height = '100vh';
-                        docEl.style.maxWidth = '100vw';
-                        docEl.style.maxHeight = '100vh';
+                        // Apply zoom to document root so the full screen is always filled
+                        // without leaving any empty or unpainted blank margins.
+                        docEl.style.zoom = factor;
+                        docEl.style.width = '100%';
+                        docEl.style.height = '100%';
+                        docEl.style.maxWidth = '100%';
+                        docEl.style.maxHeight = '100%';
+                        docEl.style.minWidth = '100%';
+                        docEl.style.minHeight = '100%';
                         docEl.style.margin = '0px';
                         docEl.style.padding = '0px';
                         docEl.style.overflow = 'hidden';
                         docEl.style.backgroundColor = '#181818';
-                        docEl.style.zoom = '1';
 
-                        // Set inverse dimensions so scaled body fills 100% of viewport
-                        body.style.zoom = factor;
-                        body.style.width = '$invW';
-                        body.style.height = '$invH';
-                        body.style.maxWidth = '$invW';
-                        body.style.maxHeight = '$invH';
-                        body.style.minWidth = '$invW';
-                        body.style.minHeight = '$invH';
+                        // Clear any body-level zoom or dimensional constraints
+                        body.style.zoom = '1';
+                        body.style.width = '100%';
+                        body.style.height = '100%';
+                        body.style.maxWidth = '100%';
+                        body.style.maxHeight = '100%';
+                        body.style.minWidth = '100%';
+                        body.style.minHeight = '100%';
                         body.style.position = 'absolute';
                         body.style.top = '0px';
                         body.style.left = '0px';
@@ -116,30 +120,16 @@ class VsCodeWebView(private val context: Context) {
                         body.style.overflow = 'hidden';
                         body.style.backgroundColor = '#181818';
 
-                        // Ensure monaco-workbench fills the layout body
+                        // Ensure monaco-workbench fills the entire zoomed body edge-to-edge
                         var workbench = document.querySelector('.monaco-workbench');
                         if (workbench) {
                             workbench.style.width = '100%';
                             workbench.style.height = '100%';
-                        }
-
-                        // Install responsive listener for screen rotation (portrait/landscape)
-                        if (!window.__avsResizeListenerInstalled) {
-                            window.__avsResizeListenerInstalled = true;
-                            window.addEventListener('resize', function() {
-                                if (window.__avsCurrentZoomFactor && window.__avsCurrentZoomFactor !== 1.0) {
-                                    var f = window.__avsCurrentZoomFactor;
-                                    var b = document.body;
-                                    if (b) {
-                                        var nw = (100.0 / f).toFixed(3) + 'vw';
-                                        var nh = (100.0 / f).toFixed(3) + 'vh';
-                                        b.style.width = nw;
-                                        b.style.height = nh;
-                                        b.style.maxWidth = nw;
-                                        b.style.maxHeight = nh;
-                                    }
-                                }
-                            });
+                            workbench.style.position = 'absolute';
+                            workbench.style.top = '0px';
+                            workbench.style.left = '0px';
+                            workbench.style.right = '0px';
+                            workbench.style.bottom = '0px';
                         }
 
                         // Install observer so when monaco-workbench mounts asynchronously, it layouts immediately
@@ -149,17 +139,19 @@ class VsCodeWebView(private val context: Context) {
                                 var wb = document.querySelector('.monaco-workbench');
                                 if (wb && !wb.__avsZoomApplied) {
                                     wb.__avsZoomApplied = true;
+                                    wb.style.width = '100%';
+                                    wb.style.height = '100%';
                                     window.dispatchEvent(new Event('resize'));
                                 }
                             });
                             obs.observe(docEl, { childList: true, subtree: true });
                         }
 
-                    // Force VS Code workbench layout recalculation
-                    window.dispatchEvent(new Event('resize'));
-                } catch(e) {}
-            })();
-        """.trimIndent()
+                        // Force VS Code workbench layout recalculation
+                        window.dispatchEvent(new Event('resize'));
+                    } catch(e) {}
+                })();
+            """.trimIndent()
         }
     }
 
@@ -170,7 +162,7 @@ class VsCodeWebView(private val context: Context) {
 
     var isDesktopMode: Boolean = true
         private set
-    var currentZoomLevel: Int = 100
+    var currentZoomLevel: Int = DEFAULT_ZOOM_LEVEL
         private set
 
     var serverPort: Int? = null
@@ -240,6 +232,7 @@ class VsCodeWebView(private val context: Context) {
                 setSupportZoom(false)
                 builtInZoomControls = false
                 displayZoomControls = false
+                textZoom = 100
                 cacheMode = WebSettings.LOAD_DEFAULT
                 mixedContentMode = WebSettings.MIXED_CONTENT_ALWAYS_ALLOW
                 allowFileAccess = true
@@ -525,10 +518,10 @@ class VsCodeWebView(private val context: Context) {
     }
 
     /**
-     * Resets zoom to default 100%.
+     * Resets zoom to default 75%.
      */
     fun resetZoom(): Int {
-        currentZoomLevel = 100
+        currentZoomLevel = DEFAULT_ZOOM_LEVEL
         applyZoom()
         onZoomChanged?.invoke(currentZoomLevel)
         return currentZoomLevel

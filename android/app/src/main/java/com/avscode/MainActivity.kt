@@ -215,6 +215,7 @@ class MainActivity : AppCompatActivity() {
         tvCliPrompt.text = terminalSession.getPrompt()
 
         // Wire zoom and desktop mode callbacks
+        tvZoomLevel.text = "${webViewManager.currentZoomLevel}%"
         webViewManager.onZoomChanged = { level ->
             runOnUiThread { tvZoomLevel.text = "$level%" }
         }

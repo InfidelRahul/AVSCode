@@ -801,7 +801,7 @@
                     android:layout_width="wrap_content"
                     android:layout_height="wrap_content"
                     android:paddingHorizontal="4dp"
-                    android:text="100%"
+                    android:text="75%"
                     android:fontFamily="monospace"
                     android:textColor="#ffffff"
                     android:textSize="11sp" />
