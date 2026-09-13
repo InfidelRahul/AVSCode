@@ -103,6 +103,25 @@ class VsCodeWebViewTest {
     }
 
     @Test
+    fun testBuildZoomJavaScriptOverridesInnerDimensions() {
+        val js = VsCodeWebView.buildZoomJavaScript(0.75)
+        assertTrue("Must intercept innerWidth", js.contains("Object.defineProperty(window, 'innerWidth'"))
+        assertTrue("Must intercept innerHeight", js.contains("Object.defineProperty(window, 'innerHeight'"))
+        assertTrue("Must intercept outerWidth", js.contains("Object.defineProperty(window, 'outerWidth'"))
+        assertTrue("Must intercept outerHeight", js.contains("Object.defineProperty(window, 'outerHeight'"))
+        assertTrue("Must handle visualViewport", js.contains("window.visualViewport"))
+        assertTrue("Must preserve native getters", js.contains("__avsNativeInnerWidthGetter"))
+    }
+
+    @Test
+    fun testBuildZoomJavaScriptInstallsResizeObserver() {
+        val js = VsCodeWebView.buildZoomJavaScript(0.75)
+        assertTrue("Must use ResizeObserver for responsive propagation", js.contains("ResizeObserver"))
+        assertTrue("ResizeObserver must observe docEl", js.contains("ro.observe(docEl);"))
+        assertFalse("Must NOT use continuous polling setInterval", js.contains("setInterval"))
+    }
+
+    @Test
     fun testIsAuthCallbackUrl() {
         // VS Code protocol callbacks
         assertTrue(VsCodeWebView.isAuthCallbackUrl("vscode://vscode.github-authentication/did-authenticate?code=123"))

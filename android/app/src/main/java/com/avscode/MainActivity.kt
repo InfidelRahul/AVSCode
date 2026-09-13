@@ -4,6 +4,7 @@ import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
+import android.content.res.Configuration
 import android.graphics.Bitmap
 import android.net.Uri
 import android.os.Build
@@ -339,6 +340,15 @@ class MainActivity : AppCompatActivity() {
     override fun onNewIntent(intent: Intent?) {
         super.onNewIntent(intent)
         handleIncomingAuthIntent(intent)
+    }
+
+    override fun onConfigurationChanged(newConfig: Configuration) {
+        super.onConfigurationChanged(newConfig)
+        if (editorContainer.visibility == View.VISIBLE) {
+            webviewContainer.post {
+                webViewManager.applyZoom()
+            }
+        }
     }
 
     private fun handleAuthCallbackUri(data: Uri): Boolean {
@@ -781,7 +791,7 @@ class MainActivity : AppCompatActivity() {
                 insets.left,
                 insets.top,
                 insets.right,
-                insets.bottom
+                maxOf(insets.bottom, ime.bottom)
             )
 
             // Apply insets to auth container
