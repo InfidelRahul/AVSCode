@@ -37,7 +37,7 @@
 
         <activity
             android:name=".MainActivity"
-            android:configChanges="orientation|screenSize|keyboardHidden|screenLayout"
+            android:configChanges="orientation|screenSize|smallestScreenSize|screenLayout|keyboard|keyboardHidden|uiMode|density"
             android:exported="true"
             android:launchMode="singleTask"
             android:theme="@style/Theme.AVscode"
@@ -46,7 +46,18 @@
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
+
+            <!-- Handle external auth callbacks and deep links (vscode://, vscode-insiders://, avscode://) -->
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="vscode" />
+                <data android:scheme="vscode-insiders" />
+                <data android:scheme="avscode" />
+            </intent-filter>
         </activity>
+
 
         <!-- Foreground service for Linux runtime -->
         <service

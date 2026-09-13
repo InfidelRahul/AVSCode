@@ -130,11 +130,12 @@ class AuthBridgeServer(
             try {
                 val client = socket.accept()
                 val addr = client.inetAddress
-                if (!addr.isLoopbackAddress && !addr.isAnyLocalAddress) {
+                if (!addr.isLoopbackAddress) {
                     AvsLogger.w(TAG, "Rejected non-loopback connection from ${addr.hostAddress}")
                     try { client.close() } catch (_: Exception) {}
                     continue
                 }
+
                 executor.submit {
                     handleConnection(client)
                 }

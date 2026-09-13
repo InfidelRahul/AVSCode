@@ -191,7 +191,17 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    private val requestNotificationPermissionLauncher =
+        registerForActivityResult(ActivityResultContracts.RequestPermission()) { isGranted ->
+            if (isGranted) {
+                AvsLogger.i(TAG, "Notification permission granted")
+            } else {
+                AvsLogger.d(TAG, "Notification permission denied or dismissed")
+            }
+        }
+
     override fun onCreate(savedInstanceState: Bundle?) {
+
         super.onCreate(savedInstanceState)
 
         // Enable edge-to-edge layout
@@ -202,8 +212,10 @@ class MainActivity : AppCompatActivity() {
 
         initViews()
         setupWindowInsets()
+        checkNotificationPermission()
 
         runtimeController = RuntimeController.getInstance(this)
+
         webViewManager = VsCodeWebView(this)
         portScanner = PortScanner()
         workspaceArchiveManager = WorkspaceArchiveManager(runtimeController.paths.hostProjectsDir)
@@ -902,7 +914,16 @@ class MainActivity : AppCompatActivity() {
         authWebView?.loadUrl("about:blank")
     }
 
+    private fun checkNotificationPermission() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            if (checkSelfPermission(android.Manifest.permission.POST_NOTIFICATIONS) != android.content.pm.PackageManager.PERMISSION_GRANTED) {
+                requestNotificationPermissionLauncher.launch(android.Manifest.permission.POST_NOTIFICATIONS)
+            }
+        }
+    }
+
     private fun handleGrantStorageAccess() {
+
         val rootfsDir = runtimeController.paths.rootfsDir
         StoragePermissionHelper.verifyStorageAccessible(rootfsDir)
         StoragePermissionHelper.markStorageConfigured(this, rootfsDir.absolutePath)

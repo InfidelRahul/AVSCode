@@ -233,12 +233,16 @@ class PRootRuntime(
             ) ?: throw RuntimeException("Failed to spawn PRoot supervisor process")
 
             supervisorPid = spawnResult[0]
+            if (spawnResult.size > 1 && spawnResult[1] >= 0) {
+                NativeSpawn.close(spawnResult[1])
+            }
             startTime = System.currentTimeMillis()
             _state.value = RuntimeState.RUNNING
 
             AvsLogger.i(TAG, "Linux runtime running with supervisor PID $supervisorPid")
         }
     }
+
 
     /**
      * Executes explicit Linux userspace verification diagnostic probe.
@@ -334,7 +338,11 @@ class PRootRuntime(
                 ) ?: throw RuntimeException("NativeSpawn failed to spawn process for command: $command")
 
                 val pid = spawnResult[0]
+                if (spawnResult.size > 1 && spawnResult[1] >= 0) {
+                    NativeSpawn.close(spawnResult[1])
+                }
                 val exitCode = NativeSpawn.waitFor(pid, false)
+
                 val output = if (outputFile.exists()) outputFile.readText() else ""
 
                 if (exitCode != 0) {
@@ -378,7 +386,11 @@ class PRootRuntime(
                 ) ?: throw RuntimeException("NativeSpawn failed for streaming command: $command")
 
                 val pid = spawnResult[0]
+                if (spawnResult.size > 1 && spawnResult[1] >= 0) {
+                    NativeSpawn.close(spawnResult[1])
+                }
                 var lastPos = 0L
+
 
                 while (true) {
                     val status = NativeSpawn.waitFor(pid, true)

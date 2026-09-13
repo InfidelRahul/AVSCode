@@ -57,5 +57,14 @@ object NativeSpawn {
      * @return 0 on success, non-zero on error
      */
     external fun kill(pid: Int, signal: Int): Int
+
+    /**
+     * Closes a native file descriptor.
+     *
+     * @param fd File descriptor to close
+     * @return 0 on success, non-zero on error
+     */
+    external fun close(fd: Int): Int
 }
+
 

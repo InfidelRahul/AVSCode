@@ -343,7 +343,11 @@ class VsCodeCliManager(
             ) ?: throw RuntimeException("Failed to spawn local VS Code Server process")
 
             serverPid = spawnResult[0]
+            if (spawnResult.size > 1 && spawnResult[1] >= 0) {
+                NativeSpawn.close(spawnResult[1])
+            }
             AvsLogger.i(TAG, "Local VS Code Server spawned (PID $serverPid), polling readiness on port $selectedPort...")
+
             onLog?.invoke("[VS Code] Server process spawned (PID $serverPid), awaiting HTTP readiness...")
 
             val readyUrl = waitForServerReady(selectedPort, logFile, onLog)

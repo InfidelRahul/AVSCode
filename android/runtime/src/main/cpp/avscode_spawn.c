@@ -144,6 +144,19 @@ Java_com_avscode_runtime_NativeSpawn_kill(JNIEnv *env, jobject self, jint pid, j
     return native_kill_impl(pid, signal);
 }
 
+static jint native_close_impl(jint fd) {
+    if (fd >= 0) {
+        return close(fd);
+    }
+    return 0;
+}
+
+JNIEXPORT jint JNICALL
+Java_com_avscode_runtime_NativeSpawn_close(JNIEnv *env, jobject self, jint fd) {
+    (void)env; (void)self;
+    return native_close_impl(fd);
+}
+
 // Backwards compatibility JNI exports for com.linuxdroid.core.process.NativeSpawn
 JNIEXPORT jintArray JNICALL
 Java_com_linuxdroid_core_process_NativeSpawn_spawn(JNIEnv *env, jobject self, jobjectArray java_argv,
@@ -164,4 +177,11 @@ Java_com_linuxdroid_core_process_NativeSpawn_kill(JNIEnv *env, jobject self, jin
     (void)env; (void)self;
     return native_kill_impl(pid, signal);
 }
+
+JNIEXPORT jint JNICALL
+Java_com_linuxdroid_core_process_NativeSpawn_close(JNIEnv *env, jobject self, jint fd) {
+    (void)env; (void)self;
+    return native_close_impl(fd);
+}
+
 
