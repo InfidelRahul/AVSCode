@@ -101,4 +101,25 @@ class VsCodeWebViewTest {
             Locale.setDefault(originalLocale)
         }
     }
+
+    @Test
+    fun testIsAuthCallbackUrl() {
+        // VS Code protocol callbacks
+        assertTrue(VsCodeWebView.isAuthCallbackUrl("vscode://vscode.github-authentication/did-authenticate?code=123"))
+        assertTrue(VsCodeWebView.isAuthCallbackUrl("vscode-insiders://vscode.github-authentication/did-authenticate?code=123"))
+        assertTrue(VsCodeWebView.isAuthCallbackUrl("avscode://auth/callback?code=123"))
+
+        // Web callback route
+        assertTrue(VsCodeWebView.isAuthCallbackUrl("http://127.0.0.1:33000/callback?vscode-reqid=1&code=123"))
+        assertTrue(VsCodeWebView.isAuthCallbackUrl("http://localhost:33000/callback?vscode-reqid=1&code=123"))
+        assertTrue(VsCodeWebView.isAuthCallbackUrl("https://vscode.dev/redirect?code=123&state=abc"))
+
+        // AuthBridge port callback
+        assertTrue(VsCodeWebView.isAuthCallbackUrl("http://127.0.0.1:40000/auth/callback?code=123", 40000))
+
+        // Normal editor/auth URLs should NOT be treated as callbacks
+        assertFalse(VsCodeWebView.isAuthCallbackUrl("http://127.0.0.1:33000/"))
+        assertFalse(VsCodeWebView.isAuthCallbackUrl("http://127.0.0.1:33000/?folder=/home/user/projects"))
+        assertFalse(VsCodeWebView.isAuthCallbackUrl("https://github.com/login/oauth/authorize?client_id=123"))
+    }
 }

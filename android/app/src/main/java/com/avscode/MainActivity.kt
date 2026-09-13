@@ -4,6 +4,7 @@ import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
+import android.graphics.Bitmap
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
@@ -90,6 +91,8 @@ class MainActivity : AppCompatActivity() {
     // Dedicated In-App Auth Dialog UI components
     private lateinit var authContainer: LinearLayout
     private lateinit var btnCloseAuth: MaterialButton
+    private lateinit var btnCloseAuthAction: MaterialButton
+    private lateinit var btnEditorCloseAuth: MaterialButton
     private lateinit var tvAuthTitle: TextView
     private lateinit var authSuccessBanner: LinearLayout
     private lateinit var authWebviewFrame: FrameLayout
@@ -246,6 +249,20 @@ class MainActivity : AppCompatActivity() {
             handleAuthCallbackUri(uri)
         }
 
+        // Wire external URL routing to dedicated in-app auth container with close button
+        webViewManager.onExternalUrlRequested = { url ->
+            runOnUiThread {
+                showAuthContainer(url, getString(R.string.auth_title))
+            }
+            true
+        }
+
+        webViewManager.onAuthFlowStateChanged = { inAuthFlow ->
+            runOnUiThread {
+                btnEditorCloseAuth.visibility = if (inAuthFlow) View.VISIBLE else View.GONE
+            }
+        }
+
         webViewManager.onConnectionError = { err ->
             AvsLogger.w(TAG, "[WebView] Connection error: $err")
         }
@@ -313,11 +330,62 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun handleAuthCallbackUri(data: Uri): Boolean {
-        val requestId = data.getQueryParameter("requestId") ?: data.getQueryParameter("state")
-        val code = data.getQueryParameter("code")
-        val token = data.getQueryParameter("token")
-        AvsLogger.i(TAG, "Processing auth callback: requestId=$requestId, hasCode=${code != null}")
+        AvsLogger.i(TAG, "Processing auth callback: $data")
 
+        // 1. Unwrap vscode.dev redirect state if present
+        var effectiveUri = data
+        val stateParam = data.getQueryParameter("state")
+        if (data.host?.contains("vscode.dev") == true && !stateParam.isNullOrBlank()) {
+            try {
+                val decodedState = Uri.parse(Uri.decode(stateParam))
+                val codeParam = data.getQueryParameter("code")
+                effectiveUri = if (codeParam != null && decodedState.getQueryParameter("code") == null) {
+                    decodedState.buildUpon().appendQueryParameter("code", codeParam).build()
+                } else {
+                    decodedState
+                }
+                AvsLogger.i(TAG, "Unwrapped redirect state into: $effectiveUri")
+            } catch (e: Exception) {
+                AvsLogger.w(TAG, "Failed to unwrap state: ${e.message}")
+            }
+        }
+
+        // 2. Extract VS Code Web callback parameters
+        val reqId = effectiveUri.getQueryParameter("vscode-reqid")
+        val scheme = effectiveUri.getQueryParameter("vscode-scheme") ?: effectiveUri.scheme ?: "vscode"
+        val authority = effectiveUri.getQueryParameter("vscode-authority") ?: effectiveUri.authority ?: "vscode.github-authentication"
+        val path = effectiveUri.getQueryParameter("vscode-path") ?: effectiveUri.path ?: "/did-authenticate"
+        val query = effectiveUri.getQueryParameter("vscode-query")
+
+        // Build query string of non-vscode parameters (e.g. code, state, nonce)
+        val queryBuilder = StringBuilder()
+        for (name in effectiveUri.queryParameterNames) {
+            if (!name.startsWith("vscode-")) {
+                val value = effectiveUri.getQueryParameter(name)
+                if (value != null) {
+                    if (queryBuilder.isNotEmpty()) queryBuilder.append("&")
+                    queryBuilder.append(name).append("=").append(Uri.encode(value))
+                }
+            }
+        }
+        if (!query.isNullOrBlank()) {
+            if (queryBuilder.isNotEmpty()) queryBuilder.append("&")
+            queryBuilder.append(query)
+        }
+
+        // 3. Inject URL callback into active VS Code editor instance
+        webViewManager.injectVsCodeUrlCallback(
+            reqId = reqId,
+            scheme = scheme,
+            authority = authority,
+            path = path,
+            query = queryBuilder.toString()
+        )
+
+        // 4. Complete AuthBridgeServer session for any CLI / guest processes
+        val code = effectiveUri.getQueryParameter("code")
+        val token = effectiveUri.getQueryParameter("token")
+        val requestId = effectiveUri.getQueryParameter("requestId") ?: effectiveUri.getQueryParameter("state") ?: reqId
         if (requestId != null) {
             runtimeController.authBridgeServer.completeSession(requestId, code, token)
         }
@@ -327,8 +395,8 @@ class MainActivity : AppCompatActivity() {
             try {
                 val bridgePort = runtimeController.authBridgePort
                 if (bridgePort > 0) {
-                    val query = data.query.orEmpty()
-                    val bridgeUrl = java.net.URL("http://127.0.0.1:$bridgePort/auth/callback?$query")
+                    val q = effectiveUri.query.orEmpty()
+                    val bridgeUrl = java.net.URL("http://127.0.0.1:$bridgePort/auth/callback?$q")
                     val conn = bridgeUrl.openConnection() as java.net.HttpURLConnection
                     conn.connectTimeout = 3000
                     conn.readTimeout = 3000
@@ -341,18 +409,21 @@ class MainActivity : AppCompatActivity() {
         }
 
         CookieManager.getInstance().flush()
+
+        // 5. Dismiss auth dialog and return to editor
         runOnUiThread {
-            Toast.makeText(this, "AVSCode: Authentication complete!", Toast.LENGTH_SHORT).show()
+            hideAuthContainer()
+            showEditorView()
+            Toast.makeText(this, R.string.auth_complete_msg, Toast.LENGTH_SHORT).show()
         }
         return true
     }
 
     private fun handleIncomingAuthIntent(intent: Intent?) {
         val data = intent?.data ?: return
-        if (data.scheme == "avscode" || data.path?.contains("callback") == true) {
+        if (webViewManager.isAuthCallback(data)) {
             handleAuthCallbackUri(data)
             showEditorView()
-            webViewManager.restoreEditor()
         }
     }
 
@@ -383,6 +454,8 @@ class MainActivity : AppCompatActivity() {
         // Dedicated In-App Auth Dialog UI components
         authContainer = findViewById(R.id.auth_container)
         btnCloseAuth = findViewById(R.id.btn_close_auth)
+        btnCloseAuthAction = findViewById(R.id.btn_close_auth_action)
+        btnEditorCloseAuth = findViewById(R.id.btn_editor_close_auth)
         tvAuthTitle = findViewById(R.id.tv_auth_title)
         authSuccessBanner = findViewById(R.id.auth_success_banner)
         authWebviewFrame = findViewById(R.id.auth_webview_frame)
@@ -471,6 +544,18 @@ class MainActivity : AppCompatActivity() {
             if (runtimeController.appState.value is AppState.Ready) {
                 showEditorView()
             }
+        }
+
+        btnCloseAuthAction.setOnClickListener {
+            hideAuthContainer()
+            if (runtimeController.appState.value is AppState.Ready) {
+                showEditorView()
+            }
+        }
+
+        btnEditorCloseAuth.setOnClickListener {
+            webViewManager.cancelAuthAndRestoreEditor()
+            btnEditorCloseAuth.visibility = View.GONE
         }
 
         btnOpenTerminal.setOnClickListener {
@@ -764,10 +849,12 @@ class MainActivity : AppCompatActivity() {
                 settings.apply {
                     javaScriptEnabled = true
                     domStorageEnabled = true
+                    databaseEnabled = true
                     useWideViewPort = true
                     loadWithOverviewMode = true
                     mixedContentMode = WebSettings.MIXED_CONTENT_ALWAYS_ALLOW
                     cacheMode = WebSettings.LOAD_DEFAULT
+                    userAgentString = webViewManager.getDesktopUserAgent()
                 }
                 val cookieManager = CookieManager.getInstance()
                 cookieManager.setAcceptCookie(true)
@@ -776,20 +863,26 @@ class MainActivity : AppCompatActivity() {
                     override fun shouldOverrideUrlLoading(view: WebView?, request: WebResourceRequest?): Boolean {
                         val uri = request?.url ?: return false
                         AvsLogger.d(TAG, "Auth WebView shouldOverrideUrlLoading: $uri")
-                        if (webViewManager.isAuthBridgeCallback(uri)) {
+                        if (webViewManager.isAuthCallback(uri)) {
                             handleAuthCallbackUri(uri)
-                            authSuccessBanner.visibility = View.VISIBLE
                             return true
                         }
                         return false
                     }
 
+                    override fun onPageStarted(view: WebView?, url: String?, favicon: Bitmap?) {
+                        super.onPageStarted(view, url, favicon)
+                        val uri = url?.let { Uri.parse(it) }
+                        if (uri != null && webViewManager.isAuthCallback(uri)) {
+                            handleAuthCallbackUri(uri)
+                        }
+                    }
+
                     override fun onReceivedError(view: WebView?, request: WebResourceRequest?, error: WebResourceError?) {
                         super.onReceivedError(view, request, error)
                         val reqUrl = request?.url
-                        if (reqUrl != null && webViewManager.isAuthBridgeCallback(reqUrl)) {
+                        if (reqUrl != null && webViewManager.isAuthCallback(reqUrl)) {
                             handleAuthCallbackUri(reqUrl)
-                            authSuccessBanner.visibility = View.VISIBLE
                         }
                     }
                 }

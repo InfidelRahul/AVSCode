@@ -765,6 +765,18 @@
                 app:icon="@drawable/ic_arrow_back"
                 app:iconTint="#ffffff" />
 
+            <com.google.android.material.button.MaterialButton
+                android:id="@+id/btn_editor_close_auth"
+                style="@style/Widget.Material3.Button.TextButton"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="@string/close"
+                android:textColor="#ff6b6b"
+                android:textSize="13sp"
+                android:visibility="gone"
+                app:icon="@drawable/ic_close"
+                app:iconTint="#ff6b6b" />
+
             <TextView
                 android:id="@+id/tv_editor_title"
                 android:layout_width="0dp"
@@ -1195,9 +1207,15 @@
                 android:textSize="14sp"
                 android:textStyle="bold" />
 
-            <View
-                android:layout_width="48dp"
-                android:layout_height="1dp" />
+            <com.google.android.material.button.MaterialButton
+                android:id="@+id/btn_close_auth_action"
+                style="@style/Widget.Material3.Button.IconButton"
+                android:layout_width="40dp"
+                android:layout_height="40dp"
+                android:contentDescription="@string/close"
+                app:icon="@drawable/ic_close"
+                app:iconSize="20dp"
+                app:iconTint="@color/text_primary" />
         </LinearLayout>
 
         <!-- Auth Success Notice Banner -->

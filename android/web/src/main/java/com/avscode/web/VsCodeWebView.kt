@@ -6,11 +6,13 @@ import android.graphics.Bitmap
 import android.graphics.Color
 import android.net.Uri
 import android.os.Build
+import android.os.Message
 import android.view.KeyEvent
 import android.view.ScaleGestureDetector
 import android.view.View
 import android.webkit.*
 import com.avscode.core.AvsLogger
+import org.json.JSONObject
 import java.util.Locale
 
 /**
@@ -69,6 +71,35 @@ class VsCodeWebView(private val context: Context) {
                 }
             }
             return "Mozilla/5.0 (X11; Linux $arch) AppleWebKit/537.36 (KHTML, like Gecko) $chromeToken Safari/537.36"
+        }
+
+        /**
+         * Checks if a given URL string is an OAuth callback intended for Android AuthBridge
+         * or VS Code Web's URL handler (vscode://, /callback, did-authenticate, etc.).
+         */
+        fun isAuthCallbackUrl(url: String, authBridgePort: Int? = null): Boolean {
+            val lower = url.lowercase()
+            if (lower.startsWith("vscode://") || lower.startsWith("vscode-insiders://") || lower.startsWith("avscode://")) {
+                return true
+            }
+            if (lower.contains("callback") || lower.contains("did-authenticate")) {
+                return true
+            }
+            if (lower.contains("vscode-reqid") || (lower.contains("code=") && lower.contains("state="))) {
+                return true
+            }
+            if (authBridgePort != null && lower.contains(":$authBridgePort")) {
+                return true
+            }
+            return false
+        }
+
+        /**
+         * Checks if a given URI is an OAuth callback intended for Android AuthBridge
+         * or VS Code Web's URL handler (vscode://, /callback, did-authenticate, etc.).
+         */
+        fun isAuthCallback(uri: Uri, authBridgePort: Int? = null): Boolean {
+            return isAuthCallbackUrl(uri.toString(), authBridgePort)
         }
 
         /**
@@ -176,8 +207,17 @@ class VsCodeWebView(private val context: Context) {
     var onLoadingStateChanged: ((Boolean) -> Unit)? = null
     var onConnectionError: ((String) -> Unit)? = null
     var onAuthCallbackReceived: ((Uri) -> Boolean)? = null
+    var onExternalUrlRequested: ((String) -> Boolean)? = null
+    var onAuthFlowStateChanged: ((Boolean) -> Unit)? = null
     var onZoomChanged: ((Int) -> Unit)? = null
     var onDesktopModeChanged: ((Boolean) -> Unit)? = null
+
+    fun setInAuthFlow(active: Boolean) {
+        if (inAuthFlow != active) {
+            inAuthFlow = active
+            onAuthFlowStateChanged?.invoke(active)
+        }
+    }
 
     /**
      * Create and configure the WebView for VS Code Web.
@@ -233,6 +273,8 @@ class VsCodeWebView(private val context: Context) {
                 builtInZoomControls = false
                 displayZoomControls = false
                 textZoom = 100
+                setSupportMultipleWindows(true)
+                javaScriptCanOpenWindowsAutomatically = true
                 cacheMode = WebSettings.LOAD_DEFAULT
                 mixedContentMode = WebSettings.MIXED_CONTENT_ALWAYS_ALLOW
                 allowFileAccess = true
@@ -277,10 +319,9 @@ class VsCodeWebView(private val context: Context) {
                     val reqUrl = request?.url
                     if (request?.isForMainFrame == true) {
                         // Suppress connection error if caused by an auth callback redirect
-                        if (reqUrl != null && isAuthBridgeCallback(reqUrl)) {
+                        if (reqUrl != null && isAuthCallback(reqUrl)) {
                             AvsLogger.w(TAG, "Auth callback reached onReceivedError; intercepting directly: $reqUrl")
                             onAuthCallbackReceived?.invoke(reqUrl)
-                            restoreEditor()
                             return
                         }
                         val description = error?.description?.toString() ?: "Connection error"
@@ -297,28 +338,30 @@ class VsCodeWebView(private val context: Context) {
                     val uriStr = uri.toString()
                     AvsLogger.d(TAG, "shouldOverrideUrlLoading: $uriStr")
 
-                    // 1. Intercept Android <-> Linux AuthBridge callbacks
-                    if (isAuthBridgeCallback(uri)) {
-                        AvsLogger.i(TAG, "Intercepted AuthBridge callback URL: $uriStr")
+                    // 1. Intercept Android <-> Linux AuthBridge & VS Code Web callback URLs
+                    if (isAuthCallback(uri)) {
+                        AvsLogger.i(TAG, "Intercepted auth callback URL in WebView: $uriStr")
+                        setInAuthFlow(false)
                         val handled = onAuthCallbackReceived?.invoke(uri) ?: true
                         if (handled) {
-                            restoreEditor()
                             return true
                         }
                     }
 
                     // 2. Pass-through VS Code Server application URLs
                     if (isVsCodeServerUrl(uri)) {
-                        inAuthFlow = false
+                        setInAuthFlow(false)
                         return false
                     }
 
                     // 3. External OAuth authentication provider URLs (Google, GitHub, Microsoft)
-                    // Must remain strictly within this Android WebView (no Chrome/external browser)
                     val host = uri.host.orEmpty()
                     if (!host.equals("127.0.0.1", ignoreCase = true) && !host.equals("localhost", ignoreCase = true)) {
-                        AvsLogger.i(TAG, "Executing in-app OAuth authentication inside WebView: $uriStr")
-                        inAuthFlow = true
+                        AvsLogger.i(TAG, "Intercepted external URL for in-app auth: $uriStr")
+                        if (onExternalUrlRequested?.invoke(uriStr) == true) {
+                            return true
+                        }
+                        setInAuthFlow(true)
                         return false
                     }
 
@@ -327,6 +370,31 @@ class VsCodeWebView(private val context: Context) {
             }
 
             webChromeClient = object : WebChromeClient() {
+                override fun onCreateWindow(
+                    view: WebView?,
+                    isDialog: Boolean,
+                    isUserGesture: Boolean,
+                    resultMsg: Message?
+                ): Boolean {
+                    val tempWebView = WebView(context).apply {
+                        webViewClient = object : WebViewClient() {
+                            override fun shouldOverrideUrlLoading(view: WebView?, request: WebResourceRequest?): Boolean {
+                                val popupUri = request?.url ?: return false
+                                return onExternalUrlRequested?.invoke(popupUri.toString()) ?: false
+                            }
+                        }
+                    }
+                    val transport = resultMsg?.obj as? WebView.WebViewTransport
+                    transport?.webView = tempWebView
+                    resultMsg?.sendToTarget()
+                    return true
+                }
+
+                override fun onCloseWindow(window: WebView?) {
+                    super.onCloseWindow(window)
+                    cancelAuthAndRestoreEditor()
+                }
+
                 override fun onConsoleMessage(consoleMessage: ConsoleMessage?): Boolean {
                     consoleMessage?.let { msg ->
                         when (msg.messageLevel()) {
@@ -415,7 +483,7 @@ class VsCodeWebView(private val context: Context) {
      * Restores the VS Code editor UI inside the WebView.
      */
     fun restoreEditor() {
-        inAuthFlow = false
+        setInAuthFlow(false)
         CookieManager.getInstance().flush()
         val target = editorUrl ?: serverPort?.let { "http://127.0.0.1:$it/?folder=/home/user/projects" }
         if (target != null) {
@@ -428,19 +496,84 @@ class VsCodeWebView(private val context: Context) {
 
     fun cancelAuthAndRestoreEditor() {
         AvsLogger.i(TAG, "Cancelling auth flow and restoring editor")
+        setInAuthFlow(false)
         restoreEditor()
     }
 
     /**
-     * Checks if a given URI is an OAuth callback intended for Android AuthBridge.
+     * Checks if a given URI is an OAuth callback intended for Android AuthBridge or VS Code Web.
+     */
+    fun isAuthCallback(uri: Uri): Boolean {
+        return Companion.isAuthCallback(uri, authBridgePort)
+    }
+
+    /**
+     * Backward-compatible alias for isAuthCallback.
      */
     fun isAuthBridgeCallback(uri: Uri): Boolean {
-        if (uri.scheme == "avscode") return true
-        val path = uri.path.orEmpty()
-        if (path.contains("auth/callback") || path.contains("/auth/callback")) return true
-        val port = if (uri.port != -1) uri.port else null
-        if (authBridgePort != null && port == authBridgePort && path.contains("callback")) return true
-        return false
+        return isAuthCallback(uri)
+    }
+
+    /**
+     * Injects an OAuth or URL callback directly into VS Code Web's LocalStorageURLCallbackProvider.
+     * Evaluates in the editor WebView, writing to `localStorage` under `vscode-web.url-callbacks[<id>]`
+     * and dispatching a `StorageEvent` so the workbench resolves pending auth promises immediately.
+     */
+    fun injectVsCodeUrlCallback(
+        reqId: String?,
+        scheme: String,
+        authority: String,
+        path: String?,
+        query: String?
+    ) {
+        val cleanPath = if (path.isNullOrBlank() || path.startsWith("/")) path else "/$path"
+        val json = JSONObject().apply {
+            put("scheme", scheme)
+            put("authority", authority)
+            if (!cleanPath.isNullOrBlank()) put("path", cleanPath)
+            if (!query.isNullOrBlank()) put("query", query)
+        }.toString()
+
+        val idNum = reqId?.toIntOrNull()
+
+        val js = """
+            (function() {
+                try {
+                    var uriObj = $json;
+                    var targetId = ${idNum ?: "null"};
+
+                    function setSlot(id) {
+                        var key = 'vscode-web.url-callbacks[' + id + ']';
+                        localStorage.setItem(key, JSON.stringify(uriObj));
+                        try {
+                            window.dispatchEvent(new StorageEvent('storage', {
+                                key: key,
+                                newValue: JSON.stringify(uriObj),
+                                storageArea: localStorage
+                            }));
+                        } catch(se) {}
+                    }
+
+                    if (targetId !== null) {
+                        setSlot(targetId);
+                    }
+                    // Also broadcast across slots 1..10 to guarantee resolution of any active pending handler
+                    for (var i = 1; i <= 10; i++) {
+                        setSlot(i);
+                    }
+                    try {
+                        window.dispatchEvent(new Event('storage'));
+                    } catch(e) {}
+                    console.log('[AVSCode] Successfully injected url-callback for ' + uriObj.authority);
+                } catch(e) {
+                    console.error('[AVSCode] Failed to dispatch url-callback:', e);
+                }
+            })();
+        """.trimIndent()
+
+        webView?.evaluateJavascript(js) { res ->
+            AvsLogger.i(TAG, "Injected VS Code URL callback evaluated: $res")
+        }
     }
 
     /**
@@ -486,6 +619,24 @@ class VsCodeWebView(private val context: Context) {
                                 configurable: true
                             });
                         } catch(e) {}
+                    }
+
+                    // Hook window.open to intercept external OAuth and documentation links
+                    if (!window.__avsWindowOpenHooked) {
+                        window.__avsWindowOpenHooked = true;
+                        var origOpen = window.open;
+                        window.open = function(url, target, features) {
+                            if (url && typeof url === 'string') {
+                                try {
+                                    var u = new URL(url, window.location.href);
+                                    if (u.hostname !== '127.0.0.1' && u.hostname !== 'localhost') {
+                                        window.location.href = url;
+                                        return null;
+                                    }
+                                } catch(e) {}
+                            }
+                            return origOpen ? origOpen.apply(this, arguments) : null;
+                        };
                     }
                 } catch(e) {}
             })();
