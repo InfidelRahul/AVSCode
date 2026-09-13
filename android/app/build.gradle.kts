@@ -8,7 +8,7 @@ android {
     compileSdk = 36
 
     defaultConfig {
-        applicationId = "com.avscode"
+        applicationId = "in.mechcoder.avscode"
         minSdk = 28
         targetSdk = 36
         versionCode = 1
