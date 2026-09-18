@@ -659,24 +659,43 @@ class RootfsInstaller(private val context: Context) {
             |}
             |
             |# 4. Install required base & development tools
-            |echo "[4/6] Installing core tools (ca-certificates, curl, wget, git, python3)..."
+            |echo "[4/6] Installing core tools & runtime dependencies..."
             |apt-get install -y --no-install-recommends \
+            |    libc6 \
+            |    libstdc++6 \
             |    ca-certificates \
+            |    tar \
+            |    gzip \
+            |    bash \
             |    curl \
             |    wget \
             |    git \
-            |    python3 \
-            |    procps || {
+            |    openssh-client \
+            |    unzip \
+            |    zip \
+            |    xz-utils \
+            |    procps \
+            |    coreutils \
+            |    findutils \
+            |    python3 || {
             |    echo "ERROR: Failed to install core development packages" >&2
             |    exit 3
             |}
+            |apt-get clean
             |
             |# 5. Create / configure Linux user 'user'
             |echo "[5/6] Configuring Linux user environment..."
             |if ! id -u user >/dev/null 2>&1; then
             |    useradd -m -s /bin/bash user || true
             |fi
-            |mkdir -p /home/user/projects /home/user/.vscode-cli /tmp
+            |mkdir -p /home/user/projects \
+            |         /home/user/.avscode/cli \
+            |         /home/user/.avscode/server \
+            |         /home/user/.avscode/user-data \
+            |         /home/user/.avscode/extensions \
+            |         /home/user/.avscode/logs \
+            |         /home/user/.vscode-cli \
+            |         /tmp
             |chmod 1777 /tmp
             |chown -R user:user /home/user || true
             |chmod 755 /home/user

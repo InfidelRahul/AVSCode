@@ -122,21 +122,23 @@ AVSCode runs full Visual Studio Code (via Microsoft's official VS Code CLI `code
 ### 4. Microsoft VS Code CLI & Local Web Server (`VsCodeCliManager.kt`)
 
 - **Binary Distribution**:
-  - Official Microsoft standalone ARM64 Linux CLI release (`cli-alpine-arm64`).
-  - Installed into Ubuntu userspace at `/usr/local/bin/code`.
+  - Official Microsoft standalone Linux ARM64 glibc CLI release (`cli-linux-arm64`).
+  - Installed into Ubuntu userspace at `/usr/local/bin/code` and `/home/user/.avscode/cli/code`.
+  - Requires glibc >= 2.28 and libstdc++ >= 3.4.25 (`GLIBCXX_3.4.25`).
 - **Launch Configuration**:
   - Executed inside PRoot as `user`:
     ```bash
     code serve-web \
       --host 127.0.0.1 \
-      --port <dynamicPort> \
+      --port <port> \
       --without-connection-token \
       --accept-server-license-terms \
-      --cli-data-dir /home/user/.vscode-cli \
-      --server-data-dir /home/user/.vscode-cli/data
+      --cli-data-dir /home/user/.avscode/cli \
+      --server-data-dir /home/user/.avscode/server \
+      --default-folder /home/user/projects
     ```
 - **Local Loopback Supervision**:
-  - Ephemeral port allocated via `ServerSocket(0)` avoids port collisions.
+  - Bound to local loopback `127.0.0.1` (preferred port 33000 to preserve origin storage, falling back to free port if occupied).
   - HTTP health probe polls `http://127.0.0.1:<port>` until ready before loading into the WebView.
   - 100% local, offline-capable development environment without external cloud or tunnel dependencies.
 

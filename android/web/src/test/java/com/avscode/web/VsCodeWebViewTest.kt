@@ -103,22 +103,19 @@ class VsCodeWebViewTest {
     }
 
     @Test
-    fun testBuildZoomJavaScriptOverridesInnerDimensions() {
+    fun testBuildZoomJavaScriptPreservesNaturalViewport() {
         val js = VsCodeWebView.buildZoomJavaScript(0.75)
-        assertTrue("Must intercept innerWidth", js.contains("Object.defineProperty(window, 'innerWidth'"))
-        assertTrue("Must intercept innerHeight", js.contains("Object.defineProperty(window, 'innerHeight'"))
-        assertTrue("Must intercept outerWidth", js.contains("Object.defineProperty(window, 'outerWidth'"))
-        assertTrue("Must intercept outerHeight", js.contains("Object.defineProperty(window, 'outerHeight'"))
-        assertTrue("Must handle visualViewport", js.contains("window.visualViewport"))
-        assertTrue("Must preserve native getters", js.contains("__avsNativeInnerWidthGetter"))
-    }
+        // Must NOT monkeypatch window.innerWidth or visualViewport
+        assertFalse("Must not monkeypatch innerWidth", js.contains("Object.defineProperty(window, 'innerWidth'"))
+        assertFalse("Must not monkeypatch innerHeight", js.contains("Object.defineProperty(window, 'innerHeight'"))
+        assertFalse("Must not monkeypatch visualViewport", js.contains("Object.defineProperty(window.visualViewport"))
+        assertFalse("Must not install fake dimension getters", js.contains("__avsDimensionsOverridden"))
 
-    @Test
-    fun testBuildZoomJavaScriptInstallsResizeObserver() {
-        val js = VsCodeWebView.buildZoomJavaScript(0.75)
-        assertTrue("Must use ResizeObserver for responsive propagation", js.contains("ResizeObserver"))
-        assertTrue("ResizeObserver must observe docEl", js.contains("ro.observe(docEl);"))
-        assertFalse("Must NOT use continuous polling setInterval", js.contains("setInterval"))
+        // Must preserve natural responsive scaling
+        assertTrue("Must scale document root", js.contains("docEl.style.zoom = factor;"))
+        assertTrue("Must preserve 100% width", js.contains("docEl.style.width = '100%';"))
+        assertTrue("Must preserve 100% height", js.contains("docEl.style.height = '100%';"))
+        assertTrue("Must dispatch native resize event", js.contains("window.dispatchEvent(new Event('resize'))"))
     }
 
     @Test

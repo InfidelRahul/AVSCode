@@ -31,11 +31,28 @@ class AppPaths(private val context: Context) {
     val guestProjectsPath: String = "/home/user/projects"
     val hostProjectsDir: File get() = File(rootfsDir, "home/user/projects")
 
-    // VS Code CLI paths inside guest
+    // VS Code paths inside guest
+    val guestVsCodeBaseDir: String = "/home/user/.avscode"
+    val guestVsCodeCliDir: String = "/home/user/.avscode/cli"
+    val guestVsCodeServerDir: String = "/home/user/.avscode/server"
+    val guestVsCodeUserDataDir: String = "/home/user/.avscode/user-data"
+    val guestVsCodeExtensionsDir: String = "/home/user/.avscode/extensions"
+    val guestVsCodeLogsDir: String = "/home/user/.avscode/logs"
     val guestVsCodeCliBin: String = "/usr/local/bin/code"
-    val guestVsCodeDataDir: String = "/home/user/.vscode-cli"
+    val guestVsCodeDataDir: String = "/home/user/.avscode/cli"
+
+    // Legacy paths for Alpine migration
+    val legacyGuestVsCodeDataDir: String = "/home/user/.vscode-cli"
+
+    val hostVsCodeBaseDir: File get() = File(rootfsDir, "home/user/.avscode")
+    val hostVsCodeCliDir: File get() = File(rootfsDir, "home/user/.avscode/cli")
+    val hostVsCodeServerDir: File get() = File(rootfsDir, "home/user/.avscode/server")
+    val hostVsCodeUserDataDir: File get() = File(rootfsDir, "home/user/.avscode/user-data")
+    val hostVsCodeExtensionsDir: File get() = File(rootfsDir, "home/user/.avscode/extensions")
+    val hostVsCodeLogsDir: File get() = File(rootfsDir, "home/user/.avscode/logs")
     val hostVsCodeCliBin: File get() = File(rootfsDir, "usr/local/bin/code")
-    val hostVsCodeDataDir: File get() = File(rootfsDir, "home/user/.vscode-cli")
+    val hostVsCodeDataDir: File get() = File(rootfsDir, "home/user/.avscode/cli")
+    val legacyHostVsCodeDataDir: File get() = File(rootfsDir, "home/user/.vscode-cli")
 
     // Log files
     val serverLogFile: File get() = File(cacheDir, "vscode-server.log")

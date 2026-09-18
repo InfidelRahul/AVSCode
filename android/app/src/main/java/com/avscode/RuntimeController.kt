@@ -189,17 +189,26 @@ class RuntimeController private constructor(private val context: Context) {
                 emitLog("[Packages] Development environment already bootstrapped.")
             }
 
+            // Step 4b: Validate Linux ARM64 / glibc runtime & system dependencies
+            emitLog("[Linux] Validating Linux ARM64 (glibc) environment and dependencies...")
+            try {
+                val validation = vscodeCli.validateGuestRuntime().getOrThrow()
+                emitLog("[Linux] Environment verified: ${validation.runtimeInfo.distro} ${validation.runtimeInfo.distroVersion} (${validation.runtimeInfo.arch}, glibc ${validation.glibcInstalled})")
+            } catch (e: Throwable) {
+                emitLog("[Linux] WARNING: Runtime validation reported: ${e.message}")
+            }
+
             // Step 5: Install Microsoft VS Code CLI inside guest if needed
             if (!vscodeCli.isInstalled()) {
-                _appState.value = AppState.InstallingVsCode(0f, "Installing Microsoft VS Code CLI...")
-                emitLog("[VS Code] Installing Microsoft VS Code CLI into Ubuntu userspace (/usr/local/bin/code)...")
+                _appState.value = AppState.InstallingVsCode(0f, "Installing Microsoft VS Code CLI (Linux ARM64)...")
+                emitLog("[VS Code] Installing Microsoft VS Code Linux ARM64 CLI into Ubuntu userspace (/usr/local/bin/code)...")
                 try {
                     vscodeCli.install { progress, status ->
                         _appState.value = AppState.InstallingVsCode(progress, status)
                         emitLog(status)
                     }.getOrThrow()
                     _appState.value = AppState.VsCodeReady
-                    emitLog("[VS Code] Microsoft VS Code CLI installed and verified.")
+                    emitLog("[VS Code] Microsoft VS Code Linux ARM64 CLI installed and verified.")
                 } catch (e: Throwable) {
                     _appState.value = AppState.VsCodeFailed("VS Code CLI installation failed: ${e.message}", e)
                     emitLog("[VS Code] INSTALLATION FAILED: ${e.message}")
@@ -207,7 +216,7 @@ class RuntimeController private constructor(private val context: Context) {
                     return@withContext Result.Failure(e)
                 }
             } else {
-                emitLog("[VS Code] Microsoft VS Code CLI already installed.")
+                emitLog("[VS Code] Microsoft VS Code Linux ARM64 CLI already installed.")
                 _appState.value = AppState.VsCodeReady
             }
 

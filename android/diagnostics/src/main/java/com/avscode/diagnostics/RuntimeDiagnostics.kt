@@ -144,15 +144,22 @@ object RuntimeDiagnostics {
     private fun collectVsCodeInfo(paths: AppPaths?): VsCodeInfo {
         val rootfsDir = paths?.rootfsDir ?: File("/data/data/com.avscode/files/ubuntu-rootfs")
         val cliBinary = paths?.hostVsCodeCliBin ?: File(rootfsDir, "usr/local/bin/code")
-        val userDataDir = paths?.hostVsCodeDataDir ?: File(rootfsDir, "home/user/.vscode-cli")
+        val userDataDir = paths?.hostVsCodeUserDataDir ?: File(rootfsDir, "home/user/.avscode/user-data")
+        val legacyDataDir = File(rootfsDir, "home/user/.vscode-cli")
 
         return VsCodeInfo(
             installed = cliBinary.exists(),
             binaryExists = cliBinary.exists(),
             binaryCanExecute = cliBinary.canExecute(),
-            userDataDirExists = userDataDir.exists(),
+            userDataDirExists = userDataDir.exists() || legacyDataDir.exists(),
             installPath = cliBinary.absolutePath,
-            version = "Microsoft VS Code CLI"
+            version = "Microsoft VS Code Linux ARM64 CLI",
+            target = "cli-linux-arm64",
+            cliDir = "/home/user/.avscode/cli",
+            serverDir = "/home/user/.avscode/server",
+            userDataDir = "/home/user/.avscode/user-data",
+            extensionsDir = "/home/user/.avscode/extensions",
+            workspaceDir = "/home/user/projects"
         )
     }
 
@@ -250,7 +257,12 @@ object RuntimeDiagnostics {
         sb.appendLine("Installed: ${report.vscodeInfo.installed}")
         sb.appendLine("Binary Exists: ${report.vscodeInfo.binaryExists}")
         sb.appendLine("Binary Executable: ${report.vscodeInfo.binaryCanExecute}")
-        sb.appendLine("User Data Dir Exists: ${report.vscodeInfo.userDataDirExists}")
+        sb.appendLine("Target: ${report.vscodeInfo.target}")
+        sb.appendLine("CLI Dir: ${report.vscodeInfo.cliDir}")
+        sb.appendLine("Server Dir: ${report.vscodeInfo.serverDir}")
+        sb.appendLine("User Data Dir: ${report.vscodeInfo.userDataDir}")
+        sb.appendLine("Extensions Dir: ${report.vscodeInfo.extensionsDir}")
+        sb.appendLine("Workspace Dir: ${report.vscodeInfo.workspaceDir}")
         sb.appendLine("Install Path: ${report.vscodeInfo.installPath}")
         sb.appendLine("Version: ${report.vscodeInfo.version ?: "Unknown"}")
         sb.appendLine()
@@ -355,7 +367,13 @@ data class VsCodeInfo(
     val binaryCanExecute: Boolean,
     val userDataDirExists: Boolean,
     val installPath: String,
-    val version: String?
+    val version: String?,
+    val target: String = "cli-linux-arm64",
+    val cliDir: String = "/home/user/.avscode/cli",
+    val serverDir: String = "/home/user/.avscode/server",
+    val userDataDir: String = "/home/user/.avscode/user-data",
+    val extensionsDir: String = "/home/user/.avscode/extensions",
+    val workspaceDir: String = "/home/user/projects"
 )
 
 data class NetworkInfo(

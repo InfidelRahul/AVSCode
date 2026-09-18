@@ -14,7 +14,7 @@ class VsCodeServerLifecycleTest {
     fun testBuildServerCommandCustomHostAndPort() {
         val cmd = VsCodeCliManager.buildServerCommand(10050, "127.0.0.1")
         assertEquals(
-            "/usr/local/bin/code serve-web --host 127.0.0.1 --port 10050 --without-connection-token --accept-server-license-terms --cli-data-dir /home/user/.vscode-cli --server-data-dir /home/user/.vscode-cli/data",
+            "/usr/local/bin/code serve-web --host 127.0.0.1 --port 10050 --without-connection-token --accept-server-license-terms --cli-data-dir /home/user/.avscode/cli --server-data-dir /home/user/.avscode/server --default-folder /home/user/projects",
             cmd
         )
     }

@@ -103,18 +103,10 @@ class VsCodeWebView(private val context: Context) {
         }
 
         /**
-         * Builds responsive CSS zoom JavaScript that scales the entire document root (html).
-         * Applying zoom to documentElement ensures the VS Code workbench always fills the full
-         * screen without leaving any empty blank margins, while dynamically adapting layout
-         * width and height to the zoom factor.
-         *
-         * Intercepts window.innerWidth, window.innerHeight, outerWidth, outerHeight, and visualViewport
-         * getters to return effective available viewport dimensions in the zoomed coordinate space.
-         * This guarantees that VS Code's Layout#layout and workbenchGrid.layout(width, height)
-         * receive the correct scaled dimensions rather than stale unscaled layout viewport pixels.
-         *
-         * Employs an event-driven ResizeObserver on documentElement to immediately propagate
-         * dimension updates on screen rotation, soft keyboard (IME), or split-screen without polling.
+         * Builds responsive CSS zoom JavaScript that scales the document root cleanly.
+         * Scales the editor UI while preserving natural browser viewport metrics, allowing
+         * VS Code's native LayoutService and grid system to calculate layout bounds naturally.
+         * Does not monkeypatch window dimensions or visualViewport getters.
          */
         fun buildZoomJavaScript(factor: Double): String {
             val fStr = String.format(Locale.US, "%.4f", factor)
@@ -125,141 +117,36 @@ class VsCodeWebView(private val context: Context) {
                         var factor = $fStr;
                         window.__avsCurrentZoomFactor = factor;
 
-                        // 1. Capture native innerWidth / innerHeight getters before overriding
-                        if (!window.__avsNativeInnerWidthGetter) {
-                            try {
-                                var descW = Object.getOwnPropertyDescriptor(Window.prototype, 'innerWidth') ||
-                                            Object.getOwnPropertyDescriptor(window, 'innerWidth');
-                                var descH = Object.getOwnPropertyDescriptor(Window.prototype, 'innerHeight') ||
-                                            Object.getOwnPropertyDescriptor(window, 'innerHeight');
-                                if (descW && descW.get) {
-                                    window.__avsNativeInnerWidthGetter = descW.get.bind(window);
-                                }
-                                if (descH && descH.get) {
-                                    window.__avsNativeInnerHeightGetter = descH.get.bind(window);
-                                }
-                            } catch(e) {}
-                        }
-
-                        // 2. Helper functions to calculate effective viewport dimensions in zoomed CSS coordinates
-                        function getEffectiveWidth() {
-                            var f = window.__avsCurrentZoomFactor || 1.0;
-                            var doc = document.documentElement;
-                            if (doc && doc.clientWidth > 0) {
-                                return doc.clientWidth;
-                            }
-                            var nw = (window.__avsNativeInnerWidthGetter ? window.__avsNativeInnerWidthGetter() : (window.outerWidth || 0));
-                            return (f > 0 && nw > 0) ? Math.round(nw / f) : nw;
-                        }
-
-                        function getEffectiveHeight() {
-                            var f = window.__avsCurrentZoomFactor || 1.0;
-                            var doc = document.documentElement;
-                            if (doc && doc.clientHeight > 0) {
-                                return doc.clientHeight;
-                            }
-                            var nh = (window.__avsNativeInnerHeightGetter ? window.__avsNativeInnerHeightGetter() : (window.outerHeight || 0));
-                            return (f > 0 && nh > 0) ? Math.round(nh / f) : nh;
-                        }
-
-                        // 3. Override window dimensions so VS Code's layoutService reads true zoomed bounds
-                        if (!window.__avsDimensionsOverridden) {
-                            window.__avsDimensionsOverridden = true;
-                            try {
-                                Object.defineProperty(window, 'innerWidth', {
-                                    get: getEffectiveWidth,
-                                    configurable: true,
-                                    enumerable: true
-                                });
-                                Object.defineProperty(window, 'innerHeight', {
-                                    get: getEffectiveHeight,
-                                    configurable: true,
-                                    enumerable: true
-                                });
-                                Object.defineProperty(window, 'outerWidth', {
-                                    get: getEffectiveWidth,
-                                    configurable: true,
-                                    enumerable: true
-                                });
-                                Object.defineProperty(window, 'outerHeight', {
-                                    get: getEffectiveHeight,
-                                    configurable: true,
-                                    enumerable: true
-                                });
-                                if (window.visualViewport) {
-                                    Object.defineProperty(window.visualViewport, 'width', {
-                                        get: getEffectiveWidth,
-                                        configurable: true,
-                                        enumerable: true
-                                    });
-                                    Object.defineProperty(window.visualViewport, 'height', {
-                                        get: getEffectiveHeight,
-                                        configurable: true,
-                                        enumerable: true
-                                    });
-                                }
-                            } catch(e) {}
-                        }
-
                         var docEl = document.documentElement;
                         var body = document.body;
                         if (!docEl || !body) return;
 
-                        // 4. Apply zoom to document root so the full screen is always filled
-                        // without leaving any empty or unpainted blank margins.
+                        // Apply clean CSS zoom to document root so editor fills full viewport
                         docEl.style.zoom = factor;
                         docEl.style.width = '100%';
                         docEl.style.height = '100%';
-                        docEl.style.maxWidth = '100%';
-                        docEl.style.maxHeight = '100%';
-                        docEl.style.minWidth = '100%';
-                        docEl.style.minHeight = '100%';
                         docEl.style.margin = '0px';
                         docEl.style.padding = '0px';
                         docEl.style.overflow = 'hidden';
                         docEl.style.backgroundColor = '#181818';
 
-                        // 5. Body fills 100% of the zoomed root container cleanly
+                        // Body matches container dimensions without artificial double-scaling
                         body.style.zoom = '1';
                         body.style.width = '100%';
                         body.style.height = '100%';
-                        body.style.maxWidth = '100%';
-                        body.style.maxHeight = '100%';
-                        body.style.minWidth = '100%';
-                        body.style.minHeight = '100%';
                         body.style.margin = '0px';
                         body.style.padding = '0px';
                         body.style.overflow = 'hidden';
                         body.style.backgroundColor = '#181818';
 
-                        // 6. Ensure monaco-workbench container respects bounds without conflicting fixed styles
+                        // Ensure workbench container respects full natural bounds
                         var workbench = document.querySelector('.monaco-workbench');
                         if (workbench) {
                             workbench.style.maxWidth = '100%';
                             workbench.style.maxHeight = '100%';
                         }
 
-                        // 7. Event-driven ResizeObserver for instant adaptation to rotation, IME, and split-screen
-                        if (!window.__avsResizeObserverInstalled && window.ResizeObserver) {
-                            window.__avsResizeObserverInstalled = true;
-                            var lastW = -1;
-                            var lastH = -1;
-                            var ro = new ResizeObserver(function(entries) {
-                                for (var i = 0; i < entries.length; i++) {
-                                    var entry = entries[i];
-                                    var w = Math.round(entry.contentRect.width);
-                                    var h = Math.round(entry.contentRect.height);
-                                    if (w > 0 && h > 0 && (w !== lastW || h !== lastH)) {
-                                        lastW = w;
-                                        lastH = h;
-                                        window.dispatchEvent(new Event('resize'));
-                                    }
-                                }
-                            });
-                            ro.observe(docEl);
-                        }
-
-                        // 8. Force VS Code workbench layout recalculation
+                        // Dispatch native resize event so VS Code layout service recalculates naturally
                         window.dispatchEvent(new Event('resize'));
                     } catch(e) {}
                 })();
