@@ -677,6 +677,9 @@ class RootfsInstaller(private val context: Context) {
             |    procps \
             |    coreutils \
             |    findutils \
+            |    grep \
+            |    sed \
+            |    mawk \
             |    python3 || {
             |    echo "ERROR: Failed to install core development packages" >&2
             |    exit 3

@@ -216,6 +216,48 @@ class VsCodeCliManager(
                 return false
             }
         }
+
+        /**
+         * Determines the primary failure cause according to Phase 40 diagnostics.
+         */
+        fun determineFailureCause(
+            runtime: GuestRuntimeInfo?,
+            exitCode: Int,
+            serverPort: Int,
+            logOutput: String
+        ): String {
+            return when {
+                runtime == null -> "invalid environment (failed to query Linux guest environment)"
+                !runtime.arch.equals(REQUIRED_ARCH, ignoreCase = true) && !runtime.arch.equals("arm64", ignoreCase = true) ->
+                    "wrong architecture: ${runtime.arch} (expected aarch64)"
+                runtime.libc.isBlank() -> "missing libc"
+                runtime.libc.equals("musl", ignoreCase = true) ->
+                    "unsupported libc: musl (AVSCode requires glibc)"
+                !isGlibcVersionSupported(runtime.libcVersion, MIN_GLIBC_VERSION) ->
+                    "unsupported glibc version: ${runtime.libcVersion} (required >= $MIN_GLIBC_VERSION)"
+                logOutput.contains("libstdc++.so.6", ignoreCase = true) &&
+                        (logOutput.contains("cannot open shared object file", ignoreCase = true) || logOutput.contains("No such file", ignoreCase = true)) ->
+                    "missing libstdc++"
+                logOutput.contains("GLIBCXX_", ignoreCase = true) && logOutput.contains("not found", ignoreCase = true) ->
+                    "missing libstdc++ (GLIBCXX symbol missing)"
+                logOutput.contains("cannot execute binary file: Exec format error", ignoreCase = true) ->
+                    "wrong artifact"
+                logOutput.contains("command not found", ignoreCase = true) ||
+                        (logOutput.contains("No such file or directory", ignoreCase = true) && !logOutput.contains("code")) ->
+                    "missing dependency"
+                logOutput.contains("Address already in use", ignoreCase = true) || logOutput.contains("EADDRINUSE", ignoreCase = true) ->
+                    "port conflict (Port $serverPort is already bound)"
+                logOutput.contains("Permission denied", ignoreCase = true) || logOutput.contains("EACCES", ignoreCase = true) ->
+                    "permissions (Permissions error inside guest rootfs)"
+                logOutput.contains("workspace", ignoreCase = true) && (logOutput.contains("invalid", ignoreCase = true) || logOutput.contains("does not exist", ignoreCase = true)) ->
+                    "workspace (invalid or inaccessible workspace)"
+                logOutput.contains("ExtensionHost", ignoreCase = true) && (logOutput.contains("crashed", ignoreCase = true) || logOutput.contains("terminated unexpectedly", ignoreCase = true)) ->
+                    "extension failure"
+                logOutput.contains("ERR_CONNECTION_REFUSED", ignoreCase = true) || logOutput.contains("WebView connection", ignoreCase = true) ->
+                    "WebView connection"
+                else -> "server state (exit code $exitCode)"
+            }
+        }
     }
 
     private val paths = AppPaths.getInstance(context)
@@ -276,7 +318,10 @@ class VsCodeCliManager(
                     LIBC_VER="${'$'}(ldd --version 2>&1 | head -n 1 | grep -oE '[0-9]+\.[0-9]+' | head -n 1)"
                 elif ldd --version 2>&1 | grep -qiE 'glibc|gnu'; then
                     LIBC="glibc"
-                    LIBC_VER="${'$'}(ldd --version 2>&1 | head -n 1 | grep -oE '[0-9]+\.[0-9]+' | head -n 1)"
+                    LIBC_VER="${'$'}(getconf GNU_LIBC_VERSION 2>/dev/null | grep -oE '[0-9]+\.[0-9]+' | head -n 1 || true)"
+                    if [ -z "${'$'}LIBC_VER" ]; then
+                        LIBC_VER="${'$'}(ldd --version 2>&1 | head -n 1 | grep -oE '[0-9]+\.[0-9]+' | head -n 1)"
+                    fi
                 fi
                 echo "OS=${'$'}OS;ARCH=${'$'}ARCH;BIT=${'$'}BIT;KERNEL=${'$'}KERNEL;DISTRO=${'$'}DISTRO;DISTRO_VER=${'$'}DISTRO_VER;LIBC=${'$'}LIBC;LIBC_VER=${'$'}LIBC_VER"
             """.trimIndent()
@@ -296,7 +341,7 @@ class VsCodeCliManager(
                 arch = map["ARCH"] ?: "aarch64",
                 bitness = map["BIT"]?.toIntOrNull() ?: 64,
                 libc = map["LIBC"] ?: "glibc",
-                libcVersion = map["LIBC_VER"] ?: "2.43",
+                libcVersion = map["LIBC_VER"]?.takeIf { it.isNotBlank() && it != "0.0" } ?: "0.0",
                 kernelVersion = map["KERNEL"] ?: "Unknown"
             )
             lastRuntimeInfo = info
@@ -320,19 +365,34 @@ class VsCodeCliManager(
                     isGlibcVersionSupported(runtime.libcVersion, MIN_GLIBC_VERSION)
 
             // 3. Validate libstdc++ and GLIBCXX symbol
-            val symbolCheckRes = linuxRuntime.execute(
-                "grep -a '$MIN_LIBSTDCXX_SYMBOL' /usr/lib/aarch64-linux-gnu/libstdc++.so.6 >/dev/null 2>&1 && echo 'OK' || " +
-                        "(strings /usr/lib/aarch64-linux-gnu/libstdc++.so.6 2>/dev/null | grep -q '$MIN_LIBSTDCXX_SYMBOL' && echo 'OK' || echo 'FAIL')"
-            )
-            val glibcxxSymbolValid = symbolCheckRes.getOrNull()?.contains("OK") == true
+            val libstdcxxCmd = """
+                LIB_PATH=""
+                for p in /usr/lib/aarch64-linux-gnu/libstdc++.so.6 /usr/lib/libstdc++.so.6 /lib/aarch64-linux-gnu/libstdc++.so.6; do
+                    if [ -f "${'$'}p" ]; then LIB_PATH="${'$'}p"; break; fi
+                done
+                if [ -z "${'$'}LIB_PATH" ]; then
+                    LIB_PATH="${'$'}(ldconfig -p 2>/dev/null | grep libstdc++.so.6 | awk '{print ${'$'}NF}' | head -n 1 || true)"
+                fi
+                if [ -n "${'$'}LIB_PATH" ] && [ -f "${'$'}LIB_PATH" ]; then
+                    if grep -a '$MIN_LIBSTDCXX_SYMBOL' "${'$'}LIB_PATH" >/dev/null 2>&1 || (strings "${'$'}LIB_PATH" 2>/dev/null | grep -q '$MIN_LIBSTDCXX_SYMBOL'); then
+                        echo "OK"
+                    else
+                        echo "NOSYMBOL"
+                    fi
+                else
+                    echo "MISSING"
+                fi
+            """.trimIndent()
 
+            val symbolCheckRes = linuxRuntime.execute(libstdcxxCmd).getOrNull()?.trim() ?: "FAIL"
+            val glibcxxSymbolValid = symbolCheckRes == "OK"
             val libstdcxxFile = File(paths.rootfsDir, "usr/lib/aarch64-linux-gnu/libstdc++.so.6")
-            val libstdcxxValid = libstdcxxFile.exists() || glibcxxSymbolValid
+            val libstdcxxValid = libstdcxxFile.exists() || glibcxxSymbolValid || symbolCheckRes != "MISSING"
 
             // 4. Validate required tools
             val requiredTools = listOf(
                 "bash", "tar", "gzip", "curl", "wget", "git", "procps",
-                "coreutils", "findutils", "ssh", "unzip", "zip", "xz"
+                "coreutils", "findutils", "grep", "sed", "unzip", "zip", "xz"
             )
             val missingTools = mutableListOf<String>()
             for (tool in requiredTools) {
@@ -357,7 +417,7 @@ class VsCodeCliManager(
                 toolVersions["code"] = it.trim()
             }
 
-            val isSatisfied = glibcValid && libstdcxxValid && missingTools.isEmpty()
+            val isSatisfied = glibcValid && libstdcxxValid && glibcxxSymbolValid && missingTools.isEmpty()
 
             val report = DependencyValidationReport(
                 runtimeInfo = runtime,
@@ -382,7 +442,16 @@ class VsCodeCliManager(
                 )
             }
             if (!libstdcxxValid) {
-                throw IllegalStateException("libstdc++6 or symbol $MIN_LIBSTDCXX_SYMBOL is missing!")
+                throw IllegalStateException("libstdc++6 is missing or not installed in guest!")
+            }
+            if (!glibcxxSymbolValid) {
+                throw IllegalStateException("libstdc++ does not satisfy required symbol $MIN_LIBSTDCXX_SYMBOL!")
+            }
+            if (missingTools.isNotEmpty()) {
+                throw IllegalStateException(
+                    "Missing required system dependencies:\n" +
+                            missingTools.joinToString(", ")
+                )
             }
 
             report
@@ -399,7 +468,8 @@ class VsCodeCliManager(
             val requiredPackages = listOf(
                 "libc6", "libstdc++6", "ca-certificates", "tar", "gzip",
                 "bash", "curl", "wget", "git", "openssh-client",
-                "unzip", "zip", "xz-utils", "procps", "coreutils", "findutils"
+                "unzip", "zip", "xz-utils", "procps", "coreutils", "findutils",
+                "grep", "sed", "mawk"
             )
 
             // Check which packages are missing
@@ -434,6 +504,7 @@ class VsCodeCliManager(
             }
 
             progressCallback?.invoke("[Dependencies] Package installation completed.")
+            Unit
         }
     }
 
@@ -477,7 +548,19 @@ class VsCodeCliManager(
                 )
             }
 
+            // Non-destructive copy of any legacy user-data if present
+            val legacyUserDataDir = File(legacyCliDir, "data/user-data")
+            if (legacyUserDataDir.exists() && legacyUserDataDir.isDirectory) {
+                onLog?.invoke("[Migration] Preserving existing VS Code user data...")
+                linuxRuntime.execute(
+                    "if [ -d $LEGACY_DATA_DIR/data/user-data ]; then " +
+                            "cp -rn $LEGACY_DATA_DIR/data/user-data/* $GUEST_USER_DATA_DIR/ 2>/dev/null || true; " +
+                            "fi"
+                )
+            }
+
             onLog?.invoke("[Migration] Alpine migration prepared. Obsolete caches will be cleaned after new runtime validates.")
+            Unit
         }
     }
 
@@ -507,22 +590,34 @@ class VsCodeCliManager(
         AvsLogger.i(TAG, "Starting Microsoft VS Code Linux ARM64 CLI installation")
 
         runCatchingResult {
-            // 1. Validate guest environment prerequisites first
+            // 1. Detect guest environment and validate target platform prerequisites first
             progressCallback?.invoke(0.05f, "Validating Linux ARM64 / glibc runtime...")
-            val validation = validateGuestRuntime().getOrThrow()
-            if (!validation.isSatisfied) {
-                throw IllegalStateException("Guest environment does not satisfy VS Code requirements")
+            val runtime = detectGuestRuntime().getOrThrow()
+            selectTargetPlatform(runtime)
+            if (!isGlibcVersionSupported(runtime.libcVersion, MIN_GLIBC_VERSION)) {
+                throw IllegalStateException(
+                    "glibc requirement not satisfied!\n" +
+                            "Installed glibc: ${runtime.libcVersion}\n" +
+                            "Required glibc: $MIN_GLIBC_VERSION"
+                )
             }
 
-            // 2. Ensure system packages are present
+            // 2. Ensure system packages are present via APT (idempotent)
             progressCallback?.invoke(0.10f, "Ensuring Linux dependencies...")
             ensureSystemDependencies { status ->
                 progressCallback?.invoke(0.15f, status)
             }.getOrThrow()
 
-            // 3. Prepare non-destructive migration from Alpine if applicable
+            // 3. Validate all guest dependencies and tools post-installation
+            progressCallback?.invoke(0.20f, "Validating guest dependencies...")
+            val validation = validateGuestRuntime().getOrThrow()
+            if (!validation.isSatisfied) {
+                throw IllegalStateException("Guest environment does not satisfy VS Code requirements:\n${validation.formatReport()}")
+            }
+
+            // 4. Prepare non-destructive migration from Alpine if applicable
             migrateFromAlpineIfNeeded { line ->
-                progressCallback?.invoke(0.20f, line)
+                progressCallback?.invoke(0.25f, line)
             }.getOrThrow()
 
             // Check if already installed and valid
@@ -537,16 +632,16 @@ class VsCodeCliManager(
                 AvsLogger.w(TAG, "Existing CLI failed verification, reinstalling: ${verify.exceptionOrNull()?.message}")
             }
 
-            // 4. Download Microsoft VS Code Linux ARM64 CLI tarball
+            // 5. Download Microsoft VS Code Linux ARM64 CLI tarball
             val downloadArchive = File(paths.cacheDir, ARCHIVE_NAME)
             if (!downloadArchive.exists() || downloadArchive.length() < 5 * 1024 * 1024) {
-                progressCallback?.invoke(0.25f, "Downloading Microsoft VS Code CLI (Linux ARM64)...")
+                progressCallback?.invoke(0.30f, "Downloading Microsoft VS Code CLI (Linux ARM64)...")
                 downloadCliArchive(downloadArchive) { p ->
-                    progressCallback?.invoke(0.25f + p * 0.35f, "Downloading VS Code CLI (${(p * 100).toInt()}%)...")
+                    progressCallback?.invoke(0.30f + p * 0.35f, "Downloading VS Code CLI (${(p * 100).toInt()}%)...")
                 }
             }
 
-            // 5. Stage CLI archive in guest /tmp
+            // 6. Stage CLI archive in guest /tmp
             progressCallback?.invoke(0.65f, "Staging Linux ARM64 CLI archive in guest /tmp...")
             val guestTmpDir = paths.hostGuestTmpDir
             if (!guestTmpDir.exists()) {
@@ -555,7 +650,7 @@ class VsCodeCliManager(
             val guestTmpArchive = File(guestTmpDir, "vscode_cli.tar.gz")
             downloadArchive.copyTo(guestTmpArchive, overwrite = true)
 
-            // 6. Verify archive integrity inside guest
+            // 7. Verify archive integrity inside guest
             progressCallback?.invoke(0.70f, "Verifying archive integrity...")
             val testExit = linuxRuntime.execute("tar -tzf /tmp/vscode_cli.tar.gz >/dev/null 2>&1 && echo 0 || echo 1")
             if (testExit.getOrNull()?.trim() != "0") {
@@ -564,7 +659,7 @@ class VsCodeCliManager(
                 throw RuntimeException("Downloaded VS Code CLI archive is corrupt or invalid")
             }
 
-            // 7. Extract into persistent AVSCode directory and set up /usr/local/bin/code
+            // 8. Extract into persistent AVSCode directory and set up /usr/local/bin/code
             progressCallback?.invoke(0.75f, "Extracting VS Code CLI inside Linux userspace...")
             val extractCmd = "mkdir -p /usr/local/bin $GUEST_BASE_DIR $GUEST_CLI_DIR $GUEST_SERVER_DIR " +
                     "$GUEST_USER_DATA_DIR $GUEST_EXTENSIONS_DIR $GUEST_LOGS_DIR $GUEST_PROJECTS_DIR && " +
@@ -582,19 +677,19 @@ class VsCodeCliManager(
                 throw RuntimeException("Extraction of VS Code CLI failed with exit code $extractExit")
             }
 
-            // 8. Verify binary architecture via ELF header inspection
+            // 9. Verify binary architecture via ELF header inspection
             progressCallback?.invoke(0.85f, "Validating ELF AArch64 executable...")
             val installedBin = File(paths.rootfsDir, "usr/local/bin/code")
             if (!verifyElfAarch64(installedBin)) {
                 throw RuntimeException("Extracted binary is not a valid 64-bit ELF ARM aarch64 executable!")
             }
 
-            // 9. Validate CLI inside Linux userspace
+            // 10. Validate CLI inside Linux userspace
             progressCallback?.invoke(0.90f, "Verifying VS Code CLI inside Linux...")
             val verify = verifyCliInstallation().getOrThrow()
             AvsLogger.i(TAG, "Microsoft VS Code Linux ARM64 CLI verified inside Linux:\n$verify")
 
-            // 10. Cleanup downloaded host archive
+            // 11. Cleanup downloaded host archive
             if (downloadArchive.exists()) downloadArchive.delete()
             if (guestTmpArchive.exists()) guestTmpArchive.delete()
 
@@ -640,57 +735,83 @@ class VsCodeCliManager(
     }
 
     /**
+     * Lists currently installed extensions in the persistent extensions directory.
+     */
+    suspend fun listExtensions(): Result<List<String>> = withContext(Dispatchers.IO) {
+        val cmd = "code --list-extensions --extensions-dir $GUEST_EXTENSIONS_DIR 2>/dev/null"
+        val res = linuxRuntime.execute(cmd)
+        if (res.isSuccess) {
+            val list = res.getOrNull()?.lines()?.map { it.trim() }?.filter { it.isNotBlank() } ?: emptyList()
+            Result.Success(list)
+        } else {
+            Result.Failure(res.exceptionOrNull() ?: RuntimeException("Failed to list extensions"))
+        }
+    }
+
+    /**
      * Downloads the official Microsoft Linux ARM64 standalone CLI archive.
+     * Tries primary endpoint, falling back if needed.
      */
     private suspend fun downloadCliArchive(target: File, onProgress: (Float) -> Unit) = withContext(Dispatchers.IO) {
-        AvsLogger.i(TAG, "Downloading Linux ARM64 VS Code CLI from $CLI_DOWNLOAD_URL")
-        var currentUrl = CLI_DOWNLOAD_URL
-        var redirects = 0
-        val maxRedirects = 5
+        val urlsToTry = listOf(CLI_DOWNLOAD_URL, CLI_FALLBACK_URL)
+        var lastException: Exception? = null
 
-        while (redirects < maxRedirects) {
-            val url = URL(currentUrl)
-            val conn = url.openConnection() as HttpURLConnection
-            conn.connectTimeout = 30000
-            conn.readTimeout = 60000
-            conn.instanceFollowRedirects = false
+        for (downloadUrl in urlsToTry) {
+            try {
+                AvsLogger.i(TAG, "Downloading Linux ARM64 VS Code CLI from $downloadUrl")
+                var currentUrl = downloadUrl
+                var redirects = 0
+                val maxRedirects = 5
 
-            val code = conn.responseCode
-            if (code in 300..399) {
-                val newUrl = conn.getHeaderField("Location")
-                if (newUrl.isNullOrEmpty()) {
-                    throw RuntimeException("Redirect received without Location header (HTTP $code)")
-                }
-                currentUrl = newUrl
-                redirects++
-                continue
-            }
+                while (redirects < maxRedirects) {
+                    val url = URL(currentUrl)
+                    val conn = url.openConnection() as HttpURLConnection
+                    conn.connectTimeout = 30000
+                    conn.readTimeout = 60000
+                    conn.instanceFollowRedirects = false
 
-            if (code !in 200..299) {
-                throw RuntimeException("HTTP error downloading VS Code CLI: $code ${conn.responseMessage}")
-            }
+                    val code = conn.responseCode
+                    if (code in 300..399) {
+                        val newUrl = conn.getHeaderField("Location")
+                        if (newUrl.isNullOrEmpty()) {
+                            throw RuntimeException("Redirect received without Location header (HTTP $code)")
+                        }
+                        currentUrl = newUrl
+                        redirects++
+                        continue
+                    }
 
-            val total = conn.contentLengthLong
-            var downloaded = 0L
+                    if (code !in 200..299) {
+                        throw RuntimeException("HTTP error downloading VS Code CLI: $code ${conn.responseMessage}")
+                    }
 
-            conn.inputStream.use { input ->
-                FileOutputStream(target).use { output ->
-                    val buf = ByteArray(64 * 1024)
-                    var r: Int
-                    while (input.read(buf).also { r = it } != -1) {
-                        output.write(buf, 0, r)
-                        downloaded += r
-                        if (total > 0) {
-                            onProgress(downloaded.toFloat() / total.toFloat())
+                    val total = conn.contentLengthLong
+                    var downloaded = 0L
+
+                    conn.inputStream.use { input ->
+                        FileOutputStream(target).use { output ->
+                            val buf = ByteArray(64 * 1024)
+                            var r: Int
+                            while (input.read(buf).also { r = it } != -1) {
+                                output.write(buf, 0, r)
+                                downloaded += r
+                                if (total > 0) {
+                                    onProgress(downloaded.toFloat() / total.toFloat())
+                                }
+                            }
                         }
                     }
+                    AvsLogger.i(TAG, "Linux ARM64 VS Code CLI download finished (${downloaded / (1024 * 1024)}MB)")
+                    return@withContext
                 }
+                throw RuntimeException("Too many redirects downloading VS Code CLI from $downloadUrl")
+            } catch (e: Exception) {
+                AvsLogger.w(TAG, "Download from $downloadUrl failed: ${e.message}")
+                lastException = e
             }
-            AvsLogger.i(TAG, "Linux ARM64 VS Code CLI download finished (${downloaded / (1024 * 1024)}MB)")
-            return@withContext
         }
 
-        throw RuntimeException("Too many redirects downloading VS Code CLI")
+        throw RuntimeException("Failed to download VS Code CLI after trying endpoints: ${lastException?.message}", lastException)
     }
 
     /**
@@ -858,18 +979,21 @@ class VsCodeCliManager(
         val runtime = lastRuntimeInfo ?: detectGuestRuntime().getOrNull()
         val vsCodeVer = getCliVersion() ?: "Unknown"
 
-        val failureCause = when {
-            runtime == null -> "Failed to query Linux guest environment"
-            runtime.arch != "aarch64" -> "Wrong Architecture: ${runtime.arch} (expected aarch64)"
-            runtime.libc != "glibc" -> "Unsupported libc: ${runtime.libc} (AVSCode requires glibc)"
-            !isGlibcVersionSupported(runtime.libcVersion, MIN_GLIBC_VERSION) ->
-                "Unsupported glibc version: ${runtime.libcVersion} (required >= $MIN_GLIBC_VERSION)"
-            logOutput.contains("Address already in use", ignoreCase = true) ->
-                "Port Conflict: Port $serverPort is already bound"
-            logOutput.contains("Permission denied", ignoreCase = true) ->
-                "Permissions error inside guest rootfs"
-            else -> "Server Process Failure (exit code $exitCode)"
-        }
+        // Query libstdc++ version inside guest
+        val libstdcxxVer = runCatching {
+            val cmd = "readlink -f /usr/lib/aarch64-linux-gnu/libstdc++.so.6 2>/dev/null || true"
+            val res = linuxRuntime.execute(cmd).getOrNull()?.trim()
+            if (!res.isNullOrEmpty()) {
+                File(res).name.removePrefix("libstdc++.so.")
+            } else "Unknown"
+        }.getOrDefault("Unknown")
+
+        val pathEnv = linuxRuntime.execute("echo \"${'$'}PATH\" 2>/dev/null").getOrNull()?.trim()
+            ?.takeIf { it.isNotBlank() } ?: "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+        val homeEnv = linuxRuntime.execute("echo \"${'$'}HOME\" 2>/dev/null").getOrNull()?.trim()
+            ?.takeIf { it.isNotBlank() } ?: "/home/user"
+
+        val failureCause = determineFailureCause(runtime, exitCode, serverPort, logOutput)
 
         return """
             ==================================================
@@ -882,21 +1006,84 @@ class VsCodeCliManager(
             Target Platform: $TARGET_PLATFORM
             Architecture: ${runtime?.arch ?: "Unknown"} (${runtime?.bitness ?: 64}-bit)
             Distribution: ${runtime?.distro ?: "Unknown"} ${runtime?.distroVersion ?: ""}
-            Kernel: ${runtime?.kernelVersion ?: "Unknown"}
+            Kernel Version: ${runtime?.kernelVersion ?: "Unknown"}
             libc Implementation: ${runtime?.libc ?: "Unknown"}
             libc Version: ${runtime?.libcVersion ?: "Unknown"} (Minimum required: $MIN_GLIBC_VERSION)
-            CLI Path: $GUEST_BIN_PATH
-            CLI Data Directory: $GUEST_CLI_DIR
-            Server Data Directory: $GUEST_SERVER_DIR
+            libstdc++ Version: $libstdcxxVer
+            PATH: $pathEnv
+            HOME: $homeEnv
+            CLI Directory: $GUEST_CLI_DIR
+            Server Directory: $GUEST_SERVER_DIR
             User Data Directory: $GUEST_USER_DATA_DIR
-            Extensions Directory: $GUEST_EXTENSIONS_DIR
+            Extension Directory: $GUEST_EXTENSIONS_DIR
             Workspace Directory: $GUEST_PROJECTS_DIR
             Server Port: $serverPort
-            Command Line: $serverCmd
-            Server Log Output:
+            Server Log Path: ${paths.serverLogFile.absolutePath}
+            Complete serve-web Arguments: $serverCmd
+            Relevant Stderr / Server Log Output:
             $logOutput
             ==================================================
         """.trimIndent()
+    }
+
+    /**
+     * Collects comprehensive runtime diagnostics conforming to Phase 33.
+     */
+    suspend fun collectRuntimeDiagnostics(): RuntimeDiagnosticsReport = withContext(Dispatchers.IO) {
+        val runtime = lastRuntimeInfo ?: detectGuestRuntime().getOrNull() ?: GuestRuntimeInfo(
+            os = "Linux",
+            distro = "Unknown",
+            distroVersion = "Unknown",
+            arch = "Unknown",
+            bitness = 64,
+            libc = "glibc",
+            libcVersion = "Unknown",
+            kernelVersion = "Unknown"
+        )
+
+        val libQueryCmd = """
+            LIB_PATH=""
+            for p in /usr/lib/aarch64-linux-gnu/libstdc++.so.6 /usr/lib/libstdc++.so.6 /lib/aarch64-linux-gnu/libstdc++.so.6; do
+                if [ -f "${'$'}p" ]; then LIB_PATH="${'$'}p"; break; fi
+            done
+            REAL_LIB="${'$'}(readlink -f "${'$'}LIB_PATH" 2>/dev/null || echo "${'$'}LIB_PATH")"
+            REAL_NAME="${'$'}(basename "${'$'}REAL_LIB")"
+            VER="${'$'}(echo "${'$'}REAL_NAME" | sed 's/libstdc++\.so\.//')"
+            MAX_GLIBCXX="${'$'}(grep -aoE 'GLIBCXX_3\.4\.[0-9]+' "${'$'}LIB_PATH" 2>/dev/null | sort -V | tail -n 1 || true)"
+            echo "VER=${'$'}VER;GLIBCXX=${'$'}MAX_GLIBCXX"
+        """.trimIndent()
+
+        val libInfo = linuxRuntime.execute(libQueryCmd).getOrNull()?.trim() ?: ""
+        val libVer = libInfo.substringAfter("VER=", "").substringBefore(";").takeIf { it.isNotBlank() } ?: "Unknown"
+        val glibcxxVer = libInfo.substringAfter("GLIBCXX=", "").takeIf { it.isNotBlank() } ?: MIN_LIBSTDCXX_SYMBOL
+
+        val nodeVer = linuxRuntime.execute("node --version 2>/dev/null").getOrNull()?.trim()
+            ?.takeIf { it.isNotBlank() } ?: "not installed"
+        val gitVer = linuxRuntime.execute("git --version 2>/dev/null").getOrNull()?.trim()
+            ?.takeIf { it.isNotBlank() } ?: "not installed"
+        val vsCodeVer = getCliVersion() ?: "not installed"
+
+        RuntimeDiagnosticsReport(
+            distribution = runtime.distro,
+            release = runtime.distroVersion,
+            architecture = runtime.arch,
+            bitness = runtime.bitness,
+            kernel = runtime.kernelVersion,
+            libc = runtime.libc,
+            glibcVersion = runtime.libcVersion,
+            libstdcxxVersion = libVer,
+            glibcxxVersion = glibcxxVer,
+            nodeVersion = nodeVer,
+            gitVersion = gitVer,
+            vsCodeVersion = vsCodeVer,
+            vsCodeTarget = CLI_TARGET,
+            vsCodeCliDirectory = GUEST_CLI_DIR,
+            vsCodeServerDirectory = GUEST_SERVER_DIR,
+            vsCodeUserDataDirectory = GUEST_USER_DATA_DIR,
+            vsCodeExtensionDirectory = GUEST_EXTENSIONS_DIR,
+            workspaceDirectory = GUEST_PROJECTS_DIR,
+            serverPort = serverPort
+        )
     }
 
     private suspend fun cleanStaleProcesses() {
@@ -984,8 +1171,69 @@ data class DependencyValidationReport(
         sb.appendLine("git: ${toolVersions["git"] ?: if ("git" in missingTools) "MISSING" else "available"}")
         sb.appendLine("Node.js: ${toolVersions["node"] ?: "not installed"}")
         sb.appendLine("npm: ${toolVersions["npm"] ?: "not installed"}")
+        if (missingTools.isNotEmpty()) {
+            sb.appendLine("Missing dependencies: ${missingTools.joinToString(", ")}")
+        }
+        if (!glibcValid) {
+            sb.appendLine("Installed glibc: $glibcInstalled")
+            sb.appendLine("Required glibc: $glibcRequired")
+        }
+        if (!libstdcxxValid) {
+            sb.appendLine("libstdc++: MISSING")
+        }
+        if (!glibcxxSymbolValid) {
+            sb.appendLine("GLIBCXX symbol: MISSING")
+        }
         sb.appendLine("Status: ${if (isSatisfied) "SATISFIED" else "INCOMPLETE"}")
-        return sb.toString()
+        return sb.toString().trimEnd()
+    }
+}
+
+data class RuntimeDiagnosticsReport(
+    val distribution: String,
+    val release: String,
+    val architecture: String,
+    val bitness: Int,
+    val kernel: String,
+    val libc: String,
+    val glibcVersion: String,
+    val libstdcxxVersion: String,
+    val glibcxxVersion: String,
+    val nodeVersion: String,
+    val gitVersion: String,
+    val vsCodeVersion: String,
+    val vsCodeTarget: String = VsCodeCliManager.CLI_TARGET,
+    val vsCodeCliDirectory: String = VsCodeCliManager.GUEST_CLI_DIR,
+    val vsCodeServerDirectory: String = VsCodeCliManager.GUEST_SERVER_DIR,
+    val vsCodeUserDataDirectory: String = VsCodeCliManager.GUEST_USER_DATA_DIR,
+    val vsCodeExtensionDirectory: String = VsCodeCliManager.GUEST_EXTENSIONS_DIR,
+    val workspaceDirectory: String = VsCodeCliManager.GUEST_PROJECTS_DIR,
+    val serverPort: Int? = null
+) {
+    fun formatReport(): String {
+        val sb = StringBuilder()
+        sb.appendLine("AVSCode Runtime")
+        sb.appendLine("---------------")
+        sb.appendLine("Distribution: $distribution")
+        sb.appendLine("Release: $release")
+        sb.appendLine("Architecture: $architecture")
+        sb.appendLine("Bitness: $bitness")
+        sb.appendLine("Kernel: $kernel")
+        sb.appendLine("libc: $libc")
+        sb.appendLine("glibc version: $glibcVersion")
+        sb.appendLine("libstdc++ version: $libstdcxxVersion")
+        sb.appendLine("GLIBCXX version: $glibcxxVersion")
+        sb.appendLine("Node version: $nodeVersion")
+        sb.appendLine("Git version: $gitVersion")
+        sb.appendLine("VS Code version: $vsCodeVersion")
+        sb.appendLine("VS Code target: $vsCodeTarget")
+        sb.appendLine("VS Code CLI directory: $vsCodeCliDirectory")
+        sb.appendLine("VS Code server directory: $vsCodeServerDirectory")
+        sb.appendLine("VS Code user-data directory: $vsCodeUserDataDirectory")
+        sb.appendLine("VS Code extension directory: $vsCodeExtensionDirectory")
+        sb.appendLine("Workspace directory: $workspaceDirectory")
+        sb.appendLine("Server port: ${serverPort?.toString() ?: "not running"}")
+        return sb.toString().trimEnd()
     }
 }
 
