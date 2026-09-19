@@ -390,15 +390,45 @@ class VsCodeCliManager(
             val libstdcxxValid = libstdcxxFile.exists() || glibcxxSymbolValid || symbolCheckRes != "MISSING"
 
             // 4. Validate required tools
-            val requiredTools = listOf(
-                "bash", "tar", "gzip", "curl", "wget", "git", "procps",
-                "coreutils", "findutils", "grep", "sed", "unzip", "zip", "xz"
+            val requiredCommands = listOf(
+                "bash",
+                "tar",
+                "gzip",
+                "curl",
+                "wget",
+                "git",
+            
+                // procps
+                "ps",
+                "pgrep",
+            
+                // coreutils
+                "mkdir",
+                "cp",
+                "mv",
+                "rm",
+                "ls",
+            
+                // findutils
+                "find",
+                "xargs",
+            
+                "grep",
+                "sed",
+                "unzip",
+                "zip",
+                "xz"
             )
+            
             val missingTools = mutableListOf<String>()
-            for (tool in requiredTools) {
-                val check = linuxRuntime.execute("command -v $tool >/dev/null 2>&1 && echo 0 || echo 1")
+            
+            for (command in requiredCommands) {
+                val check = linuxRuntime.execute(
+                    "command -v $command >/dev/null 2>&1 && echo 0 || echo 1"
+                )
+            
                 if (check.getOrNull()?.trim() != "0") {
-                    missingTools.add(tool)
+                    missingTools.add(command)
                 }
             }
 
@@ -426,7 +456,7 @@ class VsCodeCliManager(
                 glibcRequired = MIN_GLIBC_VERSION,
                 libstdcxxValid = libstdcxxValid,
                 glibcxxSymbolValid = glibcxxSymbolValid,
-                missingPackages = missingTools,
+                missingPackages = emptyList(),
                 missingTools = missingTools,
                 toolVersions = toolVersions,
                 isSatisfied = isSatisfied
